@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Slipstream Brewing — Wholesale Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"></script>
+<style>
+:root{ color-scheme:light; --bg:#f6f7f9; --card:#fff; --ink:#1a1f26; --muted:#6b7480;
+  --line:#e6e9ee; --accent:#c0392b; --accent-soft:#fbeae7; --good:#1f9d6b; --bad:#d1495b;
+  --disabled:#9aa3ad; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.4}
+.wrap{max-width:1080px;margin:0 auto;padding:18px}
+header.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px;justify-content:space-between}
+h1{font-size:20px;margin:0;font-weight:700}
+.sub{color:var(--muted);font-size:12.5px}
+.tabs{display:flex;gap:6px;margin:14px 0}
+.tabs button{font:inherit;padding:6px 12px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink);cursor:pointer}
+.tabs button.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+.banner{margin:12px 0;padding:10px 12px;border-radius:8px;font-size:12.5px}
+.banner.warn{background:#fff7e6;border:1px solid #f2d999;color:#7a5a00}
+.banner.ok{background:#eafaf1;border:1px solid #b7e4c7;color:#1b6b43}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}
+select,input,button{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent);cursor:pointer}
+#customRange{display:none;gap:8px;align-items:center}
+#customRange.show{display:flex}
+.periodline{color:var(--muted);font-size:12.5px;margin:2px 0 8px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+@media(max-width:820px){.grid{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.grid{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card .label{color:var(--muted);font-size:12.5px}
+.card .val{font-size:26px;font-weight:700;letter-spacing:-.4px;margin-top:4px}
+.card .val.na{color:var(--disabled);font-size:16px;font-weight:600}
+.deltas{margin-top:8px;font-size:11.5px;color:var(--muted);display:flex;flex-direction:column;gap:2px}
+.delta .up{color:var(--good);font-weight:600}
+.delta .down{color:var(--bad);font-weight:600}
+.delta .flat{color:var(--muted);font-weight:600}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-top:14px}
+.panel h3{margin:0 0 10px;font-size:14px}
+.chan{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+@media(max-width:560px){.chan{grid-template-columns:1fr}}
+.chan .c .label{color:var(--muted);font-size:12px}
+.chan .c .v{font-size:20px;font-weight:700}
+.chan .c .s{font-size:11.5px;color:var(--muted)}
+.chartbox{position:relative;height:240px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:8px 6px;border-top:1px solid var(--line)}
+th{color:var(--muted);font-weight:600}
+.pill{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--accent-soft);color:var(--accent)}
+.pill.na{background:#eef0f3;color:var(--disabled)}
+label.chk{display:flex;gap:8px;align-items:center;padding:6px 0}
+footer{margin:18px 0 4px;color:var(--muted);font-size:11.5px}
+.center{max-width:380px;margin:60px auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:24px}
+.center h2{margin:0 0 6px;font-size:18px}
+.center p{color:var(--muted);font-size:13px}
+.center input{width:100%;margin:10px 0}
+.hide{display:none}
+.err{color:var(--bad);font-size:12.5px;margin-top:6px}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;background:#f0f2f5;padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+
+<!-- Password gate -->
+<div id="gate" class="center hide">
+  <h2 id="gateTitle">Set your dashboard password</h2>
+  <p id="gateMsg">This keeps your numbers private. You'll enter it each time on a new device.</p>
+  <input id="gatePw" type="password" placeholder="Password" autocomplete="current-password">
+  <button class="primary" id="gateBtn" style="width:100%">Continue</button>
+  <div class="err hide" id="gateErr"></div>
+</div>
+
+<!-- App -->
+<div id="app" class="wrap hide">
+  <header class="top">
+    <div><h1 id="venueName">Slipstream Brewing — Wholesale</h1>
+      <div class="sub">Money from Xero (ex-GST) · Litres from Beer30 · read-only</div></div>
+    <button id="logoutBtn" style="cursor:pointer">Log out</button>
+  </header>
+
+  <div class="tabs">
+    <button data-tab="board" class="on">Dashboard</button>
+    <button data-tab="connect">Connections</button>
+    <button data-tab="check">Check your numbers</button>
+    <button data-tab="settings">Settings</button>
+  </div>
+
+  <div id="verifyBanner" class="banner warn hide"></div>
+
+  <!-- BOARD -->
+  <section id="tab-board">
+    <div class="controls">
+      <select id="period">
+        <option value="tw">This week</option>
+        <option value="lw">Last week</option>
+        <option value="tm" selected>This month</option>
+        <option value="lm">Last month</option>
+        <option value="tfy">This financial year</option>
+        <option value="lfy">Last financial year</option>
+        <option value="custom">Custom range…</option>
+      </select>
+      <span id="customRange"><input type="date" id="from"><span>to</span><input type="date" id="to"></span>
+      <button class="primary" id="refreshBtn">Refresh</button>
+    </div>
+    <div class="periodline" id="periodLine"></div>
+
+    <div class="grid" id="cards"></div>
+
+    <div class="panel">
+      <h3>Sales by channel</h3>
+      <div class="chan" id="channels"></div>
+    </div>
+
+    <div class="panel">
+      <h3>Trend — revenue &amp; volume</h3>
+      <div class="chartbox"><canvas id="trend"></canvas></div>
+    </div>
+
+    <footer id="syncLine"></footer>
+  </section>
+
+  <!-- CONNECTIONS -->
+  <section id="tab-connect" class="hide">
+    <div class="panel">
+      <h3>Xero — your money figures</h3>
+      <p class="sub">Read-only. It can look at your P&amp;L; it can never change your books.</p>
+      <div id="xeroStatus" class="sub"></div>
+      <p style="margin-top:10px"><button class="primary" id="xeroConnect">Connect Xero</button>
+        <button id="xeroDisconnect" class="hide">Disconnect</button></p>
+      <p class="sub">If Xero asks for a return address, it's:<br><span class="mono" id="xeroCb"></span></p>
+    </div>
+    <div class="panel">
+      <h3>Beer30 — your volume in litres</h3>
+      <p class="sub">Drop a Beer30 volume export here to update litres. Enter your upload code once.</p>
+      <div id="volStatus" class="sub"></div>
+      <p style="margin-top:10px">
+        <input id="uploadCode" placeholder="Upload code" style="max-width:180px">
+        <input type="file" id="volFile" accept=".csv,text/csv">
+        <button class="primary" id="volUpload">Upload</button>
+      </p>
+      <div class="err hide" id="volErr"></div>
+    </div>
+  </section>
+
+  <!-- CHECK YOUR NUMBERS -->
+  <section id="tab-check" class="hide">
+    <div class="panel">
+      <h3>Check your numbers</h3>
+      <p class="sub">Tick each metric once you've matched it against your own report for the same
+        dates — Xero P&amp;L for money, Beer30 for litres. The board stays marked
+        <b>unverified</b> until all connected metrics are confirmed.</p>
+      <div id="checkList"></div>
+    </div>
+  </section>
+
+  <!-- SETTINGS -->
+  <section id="tab-settings" class="hide">
+    <div class="panel">
+      <h3>Settings</h3>
+      <p class="chk"><span style="min-width:170px">Business name</span><input id="setName"></p>
+      <p class="chk"><span style="min-width:170px">Week starts on</span>
+        <select id="setWeekStart">
+          <option value="1">Monday</option><option value="0">Sunday</option>
+        </select></p>
+      <p class="chk"><span style="min-width:170px">Default period</span>
+        <select id="setDefault">
+          <option value="tm">This month</option><option value="tw">This week</option>
+          <option value="tfy">This financial year</option>
+        </select></p>
+      <p class="chk"><span style="min-width:170px">Accent colour</span><input type="color" id="setAccent" value="#c0392b"></p>
+      <p class="chk"><span style="min-width:170px">Gross margin target %</span><input id="setGmTarget" type="number" style="max-width:110px"></p>
+      <button class="primary" id="saveSettings">Save</button>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (s)=>document.querySelector(s);
+const S = JSON.parse(localStorage.getItem("slipWholesale")||"{}");
+const money=(n)=> n==null?"—":"$"+Number(n).toLocaleString("en-AU",{maximumFractionDigits:0});
+const litres=(n)=> n==null?"—":Number(n).toLocaleString("en-AU",{maximumFractionDigits:0})+" L";
+const pct=(n)=> n==null?"—":(n*100).toFixed(1)+"%";
+let trendChart;
+
+function saveS(){ localStorage.setItem("slipWholesale", JSON.stringify(S)); }
+
+// ---------- date ranges (Brisbane-ish; week start configurable) ----------
+function ymd(d){ return d.toISOString().slice(0,10); }
+function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
+function startOfWeek(d,ws){ const x=new Date(d); const day=(x.getDay()-ws+7)%7; return addDays(x,-day); }
+function fyStart(d){ const y=d.getMonth()>=6?d.getFullYear():d.getFullYear()-1; return new Date(y,6,1); }
+function ranges(period, ws){
+  const now=new Date(); now.setHours(12,0,0,0);
+  let cur,prev,yoy;
+  const wrap=(a,b)=>({from:ymd(a),to:ymd(b)});
+  if(period==="tw"){ const s=startOfWeek(now,ws); cur=wrap(s,now); prev=wrap(addDays(s,-7),addDays(s,-1)); yoy=wrap(addDays(s,-364),addDays(now,-364)); }
+  else if(period==="lw"){ const s=addDays(startOfWeek(now,ws),-7); const e=addDays(s,6); cur=wrap(s,e); prev=wrap(addDays(s,-7),addDays(s,-1)); yoy=wrap(addDays(s,-364),addDays(e,-364)); }
+  else if(period==="tm"){ const s=new Date(now.getFullYear(),now.getMonth(),1); cur=wrap(s,now); const ps=new Date(now.getFullYear(),now.getMonth()-1,1); prev=wrap(ps,new Date(now.getFullYear(),now.getMonth(),0)); const ys=new Date(now.getFullYear()-1,now.getMonth(),1); yoy=wrap(ys,new Date(now.getFullYear()-1,now.getMonth(),now.getDate())); }
+  else if(period==="lm"){ const s=new Date(now.getFullYear(),now.getMonth()-1,1); const e=new Date(now.getFullYear(),now.getMonth(),0); cur=wrap(s,e); const ps=new Date(now.getFullYear(),now.getMonth()-2,1); prev=wrap(ps,new Date(now.getFullYear(),now.getMonth()-1,0)); const ys=new Date(now.getFullYear()-1,now.getMonth()-1,1); yoy=wrap(ys,new Date(now.getFullYear()-1,now.getMonth(),0)); }
+  else if(period==="tfy"){ const s=fyStart(now); cur=wrap(s,now); const ps=new Date(s.getFullYear()-1,6,1); prev=wrap(ps,new Date(s.getFullYear(),5,30)); yoy=wrap(ps,new Date(now.getFullYear()-1,now.getMonth(),now.getDate())); }
+  else if(period==="lfy"){ const s=new Date(fyStart(now).getFullYear()-1,6,1); const e=new Date(s.getFullYear()+1,5,30); cur=wrap(s,e); const ps=new Date(s.getFullYear()-1,6,1); prev=wrap(ps,new Date(s.getFullYear(),5,30)); yoy=prev; }
+  else { const f=$("#from").value, t=$("#to").value; cur=wrap(new Date(f),new Date(t)); const span=(new Date(t)-new Date(f))/864e5; prev=wrap(addDays(new Date(f),-span-1),addDays(new Date(f),-1)); yoy=wrap(addDays(new Date(f),-365),addDays(new Date(t),-365)); }
+  return {cur,prev,yoy};
+}
+
+// ---------- metric computation (definitions live here) ----------
+function computeSet(p){
+  if(!p) return null;
+  const a=p.accounting, v=p.volume;
+  const revenue = a? a.revenue : null;
+  const grossM = (a && revenue) ? (revenue - a.cogs) : null;
+  const grossPct = (a && revenue) ? (revenue - a.cogs)/revenue : null;
+  const contribution = a ? (revenue - a.cogs - a.directCosts) : null;
+  const vol = v ? v.litres : null;
+  const accounts = a ? a.accounts : null;          // null → not configured
+  const orders = a ? a.orders : null;
+  const aov = (a && orders) ? revenue/orders : (orders===0? null : null);
+  return { revenue, grossM, grossPct, contribution, vol, accounts, orders, aov,
+    channels:a?a.channels:null, volChannels:v?v.channels:null };
+}
+function deltaHTML(cur,prev,yoy,fmt,invert){
+  const line=(base,tag)=>{
+    if(cur==null||base==null||base===0) return `<div class="delta">${tag}: —</div>`;
+    const d=(cur-base)/Math.abs(base); const up=d>=0;
+    const cls=(invert? !up:up)?"up":"down"; const arrow=up?"▲":"▼";
+    return `<div class="delta">${tag}: <span class="${Math.abs(d)<0.0005?'flat':cls}">${arrow} ${(Math.abs(d)*100).toFixed(1)}%</span></div>`;
+  };
+  return `<div class="deltas">${line(prev,"vs prev")}${line(yoy,"vs last yr")}</div>`;
+}
+
+function card(label, valHTML, cur, prev, yoy, fmt, invert){
+  return `<div class="card"><div class="label">${label}</div>${valHTML}${deltaHTML(cur,prev,yoy,fmt,invert)}</div>`;
+}
+function valOr(v, fmt){ return v==null? `<div class="val na">Not configured</div>` : `<div class="val">${fmt(v)}</div>`; }
+
+async function load(){
+  const ws = Number(S.weekStart ?? 1);
+  const period = $("#period").value;
+  const R = ranges(period, ws);
+  $("#periodLine").textContent = `${R.cur.from} → ${R.cur.to}  ·  vs previous period and same period last year`;
+  const qs = new URLSearchParams({ cur:`${R.cur.from}:${R.cur.to}`, prev:`${R.prev.from}:${R.prev.to}`, yoy:`${R.yoy.from}:${R.yoy.to}` });
+  const data = await fetch(`/api/metrics?${qs}`).then(r=>r.json());
+
+  const cur=computeSet(data.periods.cur), prev=computeSet(data.periods.prev), yoy=computeSet(data.periods.yoy);
+  renderCards(cur,prev,yoy);
+  renderChannels(cur);
+  renderTrend(yoy,prev,cur);
+  renderSync(data.sources);
+  renderVerify(data.sources);
+  renderCheck(cur, data.sources);
+  window._src = data.sources;
+}
+
+function renderCards(cur,prev,yoy){
+  const c=cur||{}, p=prev||{}, y=yoy||{};
+  const gmTarget = S.gmTarget? Number(S.gmTarget)/100 : null;
+  let gmVal = c.grossPct==null? `<div class="val na">Not configured</div>`
+    : `<div class="val">${pct(c.grossPct)}</div>`;
+  const html = [
+    card("Wholesale revenue (ex-GST)", valOr(c.revenue,money), c.revenue,p.revenue,y.revenue),
+    card("Gross margin %", gmVal, c.grossPct,p.grossPct,y.grossPct),
+    card("Wholesale contribution", valOr(c.contribution,money), c.contribution,p.contribution,y.contribution),
+    card("Volume sold", valOr(c.vol,litres), c.vol,p.vol,y.vol),
+    card("Active accounts", valOr(c.accounts,(n)=>n), c.accounts,p.accounts,y.accounts),
+    card("Average order value", valOr(c.aov,money), c.aov,p.aov,y.aov),
+  ].join("");
+  $("#cards").innerHTML = html;
+}
+function renderChannels(cur){
+  const ch = cur && cur.channels;
+  if(!ch){ $("#channels").innerHTML=`<div class="c"><div class="v na">Not configured</div></div>`; return; }
+  const total = cur.revenue||0;
+  const vc = cur.volChannels||{};
+  const cell=(name,dollars,l)=>`<div class="c"><div class="label">${name}</div>
+     <div class="v">${money(dollars)}</div>
+     <div class="s">${total? ((dollars/total)*100).toFixed(0):0}% of revenue${l!=null?` · ${litres(l)}`:""}</div></div>`;
+  $("#channels").innerHTML =
+    cell("Keg / draught", ch.keg, vc.keg) +
+    cell("Packaged", ch.package, vc.package) +
+    cell("General wholesale", ch.general, null);
+}
+function renderTrend(y,p,c){
+  const ctx=$("#trend");
+  const labels=["Last year","Prev period","Current"];
+  const rev=[y?.revenue??null,p?.revenue??null,c?.revenue??null];
+  const vol=[y?.vol??null,p?.vol??null,c?.vol??null];
+  if(trendChart) trendChart.destroy();
+  trendChart=new Chart(ctx,{type:"line",data:{labels,datasets:[
+    {label:"Revenue ($)",data:rev,borderColor:getComputedStyle(document.body).getPropertyValue('--accent')||'#c0392b',tension:.25,yAxisID:'y'},
+    {label:"Volume (L)",data:vol,borderColor:"#2f6fed",tension:.25,yAxisID:'y1'}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      scales:{y:{position:'left',title:{display:true,text:'$'}},y1:{position:'right',title:{display:true,text:'L'},grid:{drawOnChartArea:false}}}}});
+}
+function renderSync(src){
+  const a=src.accounting, v=src.volume;
+  const t=(x)=> x? new Date(x).toLocaleString("en-AU"):"—";
+  $("#syncLine").innerHTML = `Xero: ${a.connected? (a.org||"connected"):"not connected"} · last sync ${t(a.lastSync)}`
+    + `  |  Beer30 volume: ${v.connected?"synced":"not connected"} · ${t(v.lastSync)}`
+    + (a.sandbox? ` <b style="color:var(--bad)">⚠ looks like a Xero Demo Company</b>`:"");
+}
+const METRIC_KEYS=[["revenue","Wholesale revenue"],["margin","Gross margin %"],["contribution","Contribution"],["volume","Volume (litres)"],["channels","Sales by channel"]];
+function renderVerify(src){
+  const v=S.verified||{};
+  const connectedMoney = src.accounting.connected;
+  const need = METRIC_KEYS.filter(([k])=> k!=="volume" ? connectedMoney : src.volume.connected);
+  const pending = need.filter(([k])=> !v[k]);
+  const b=$("#verifyBanner");
+  if(!connectedMoney && !src.volume.connected){ b.className="banner warn"; b.classList.remove("hide"); b.textContent="Connect Xero to light up your money numbers."; return; }
+  if(pending.length){ b.className="banner warn"; b.classList.remove("hide");
+    b.textContent=`Unverified — ${pending.length} metric(s) still need checking against your own reports.`; }
+  else { b.className="banner ok"; b.classList.remove("hide"); b.textContent="✓ Verified — every connected metric has been checked."; }
+}
+function renderCheck(cur,src){
+  const v=S.verified||{};
+  const rows=METRIC_KEYS.map(([k,name])=>{
+    const connected = k==="volume"? src.volume.connected : src.accounting.connected;
+    const dis = connected? "" : "disabled";
+    const tag = connected? "" : `<span class="pill na">not connected</span>`;
+    return `<label class="chk"><input type="checkbox" data-vk="${k}" ${v[k]?"checked":""} ${dis}>
+      <span style="min-width:200px">${name}</span> ${tag}</label>`;
+  }).join("");
+  $("#checkList").innerHTML=rows;
+  $("#checkList").querySelectorAll("input").forEach(cb=>cb.onchange=()=>{
+    S.verified=S.verified||{}; S.verified[cb.dataset.vk]=cb.checked; saveS(); renderVerify(window._src||src);
+  });
+}
+
+// ---------- tabs ----------
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
+  document.querySelectorAll(".tabs button").forEach(x=>x.classList.remove("on")); b.classList.add("on");
+  ["board","connect","check","settings"].forEach(t=>$("#tab-"+t).classList.add("hide"));
+  $("#tab-"+b.dataset.tab).classList.remove("hide");
+});
+
+// ---------- connections ----------
+async function refreshConn(){
+  const s=await fetch("/api/status").then(r=>r.json());
+  const a=s.sources.accounting, v=s.sources.volume;
+  $("#xeroStatus").innerHTML = a.connected? `Connected: <b>${a.org||"your organisation"}</b>${a.sandbox?' <span style="color:var(--bad)">(looks like Demo Company — reconnect the real org)</span>':""}` : (a.configured?"Not connected yet.":"Not set up yet.");
+  $("#xeroConnect").classList.toggle("hide", a.connected);
+  $("#xeroDisconnect").classList.toggle("hide", !a.connected);
+  $("#volStatus").textContent = v.connected? `Last volume sync: ${new Date(v.lastSync).toLocaleString("en-AU")}` : "No volume uploaded yet.";
+  $("#xeroCb").textContent = location.origin+"/auth/xero/callback";
+}
+$("#xeroConnect").onclick=()=> location.href="/auth/xero/begin";
+$("#xeroDisconnect").onclick=async()=>{ await fetch("/api/disconnect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({source:"xero"})}); refreshConn(); };
+$("#volUpload").onclick=async()=>{
+  const f=$("#volFile").files[0]; const code=$("#uploadCode").value.trim();
+  $("#volErr").classList.add("hide");
+  if(!f||!code){ $("#volErr").textContent="Pick a file and enter your upload code."; $("#volErr").classList.remove("hide"); return; }
+  const text=await f.text();
+  const res=await fetch("/api/ingest?source=volume",{method:"POST",headers:{"Authorization":"Bearer "+code},body:text});
+  if(!res.ok){ const e=await res.json().catch(()=>({})); $("#volErr").textContent=(e.error&&e.error.plain)||"Upload failed."; $("#volErr").classList.remove("hide"); return; }
+  S.uploadCode=code; saveS(); refreshConn(); load();
+};
+
+// ---------- settings ----------
+function loadSettings(){
+  $("#setName").value=S.name||"Slipstream Brewing — Wholesale";
+  $("#setWeekStart").value=String(S.weekStart??1);
+  $("#setDefault").value=S.defaultPeriod||"tm";
+  $("#setAccent").value=S.accent||"#c0392b";
+  $("#setGmTarget").value=S.gmTarget||"";
+  applyChrome();
+}
+function applyChrome(){
+  document.documentElement.style.setProperty("--accent", S.accent||"#c0392b");
+  $("#venueName").textContent=S.name||"Slipstream Brewing — Wholesale";
+}
+$("#saveSettings").onclick=()=>{
+  S.name=$("#setName").value; S.weekStart=Number($("#setWeekStart").value);
+  S.defaultPeriod=$("#setDefault").value; S.accent=$("#setAccent").value; S.gmTarget=$("#setGmTarget").value;
+  saveS(); applyChrome(); $("#period").value=S.defaultPeriod; load();
+};
+
+// ---------- period control ----------
+$("#period").onchange=()=>{ $("#customRange").classList.toggle("show",$("#period").value==="custom"); if($("#period").value!=="custom") load(); };
+$("#refreshBtn").onclick=load;
+
+// ---------- auth bootstrap ----------
+async function boot(){
+  const probe=await fetch("/api/status");
+  if(probe.status===401){
+    const j=await probe.json().catch(()=>({}));
+    $("#gate").classList.remove("hide");
+    if(j.needsLogin){ $("#gateTitle").textContent="Enter your dashboard password"; $("#gateMsg").textContent="Welcome back."; window._mode="login"; }
+    else { window._mode="set"; }
+    return;
+  }
+  startApp();
+}
+$("#gateBtn").onclick=async()=>{
+  const pw=$("#gatePw").value; $("#gateErr").classList.add("hide");
+  const path=window._mode==="login"?"/api/login":"/api/set-password";
+  const res=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({password:pw})});
+  if(!res.ok){ const e=await res.json().catch(()=>({})); $("#gateErr").textContent=(e.error&&e.error.plain)||"Try again."; $("#gateErr").classList.remove("hide"); return; }
+  location.reload();
+};
+$("#logoutBtn").onclick=async()=>{ await fetch("/api/logout",{method:"POST"}); location.reload(); };
+
+function startApp(){
+  $("#app").classList.remove("hide");
+  loadSettings();
+  if(S.defaultPeriod) $("#period").value=S.defaultPeriod;
+  refreshConn(); load();
+}
+boot();
+</script>
+</body>
+</html>

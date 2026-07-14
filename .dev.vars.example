@@ -1,0 +1,8 @@
+# Optional local-dev overrides only. Real secrets live in the Cloudflare
+# dashboard (Settings > Variables and Secrets), never in the repo.
+# The owner normally sets the dashboard password on the first-run screen, so
+# DASHBOARD_PASSCODE is only used by the one-click deploy button's wizard.
+DASHBOARD_PASSCODE=
+XERO_CLIENT_ID=
+XERO_CLIENT_SECRET=
+INGEST_TOKEN=

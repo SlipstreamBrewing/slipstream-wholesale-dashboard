@@ -1,0 +1,31 @@
+# Cloudflare Worker config for the Slipstream Brewing Wholesale dashboard.
+# `name` sets the URL (https://<name>.<subdomain>.workers.dev) and MUST match
+# the GitHub repo name before the first push.
+name = "slipstream-wholesale-dashboard"
+main = "worker.js"
+compatibility_date = "2025-07-01"
+
+# Token + data store. Cloudflare auto-provisions this KV namespace on the first
+# Workers Build from the repo. AFTER the first deploy, read the generated id from
+# the Cloudflare dashboard and paste it below (replace PIN_AFTER_FIRST_DEPLOY) so
+# later deploys reuse it instead of orphaning the saved password/tokens.
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "PIN_AFTER_FIRST_DEPLOY"
+
+# Serve the dashboard page as text bundled with the Worker.
+[[rules]]
+type = "Text"
+globs = ["dashboard.html"]
+
+# --- Secrets set in the Cloudflare dashboard (Settings > Variables and Secrets),
+#     never in this repo ---
+#   XERO_CLIENT_ID       Xero app client id
+#   XERO_CLIENT_SECRET   Xero app client secret
+#   INGEST_TOKEN         the owner's "upload code" for Beer30 export drops
+#   (SESSION_SECRET and the dashboard password hash generate themselves in KV;
+#    never set them.)
+
+# Beer30 scheduled-pull hook (rung 2). Uncomment when a stable export URL is wired.
+# [triggers]
+# crons = ["0 15 * * *"]

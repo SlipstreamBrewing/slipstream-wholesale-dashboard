@@ -1,0 +1,13 @@
+{
+  "name": "slipstream-wholesale-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live wholesale KPI dashboard for Slipstream Brewing — reads Xero (money, ex-GST) and Beer30 (litres). Read-only.",
+  "scripts": {
+    "deploy": "npx wrangler deploy",
+    "selftest": "node selftest.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
