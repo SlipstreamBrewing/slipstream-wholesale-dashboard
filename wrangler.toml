@@ -13,10 +13,8 @@ compatibility_date = "2025-07-01"
 [[kv_namespaces]]
 binding = "TOKENS"
 
-# Serve the dashboard page as text bundled with the Worker.
-[[rules]]
-type = "Text"
-globs = ["dashboard.html"]
+# dashboard.html is bundled as a Text module by Wrangler's built-in default rule
+# (**/*.html), so no custom [[rules]] block is needed here.
 
 # --- Secrets set in the Cloudflare dashboard (Settings > Variables and Secrets),
 #     never in this repo ---
@@ -26,6 +24,4 @@ globs = ["dashboard.html"]
 #   (SESSION_SECRET and the dashboard password hash generate themselves in KV;
 #    never set them.)
 
-# Beer30 scheduled-pull hook (rung 2). Uncomment when a stable export URL is wired.
-# [triggers]
-# crons = [
+# Beer30 scheduled-pull hook (rung 2). Uncomment when a stable export URL is w
