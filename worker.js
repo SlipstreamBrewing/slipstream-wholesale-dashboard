@@ -35,9 +35,10 @@ const WHOLESALE_DIRECT_COSTS = [
   "co2",
 ];
 
-const XERO_SCOPES =
-  "offline_access accounting.reports.profitandloss.read " +
-  "accounting.transactions.read accounting.settings.read";
+// Granular scopes only (apps created on/after 2 Mar 2026). The P&L report is all
+// the implemented money metrics need. Invoice-count metrics (active accounts,
+// AOV) will add the granular invoices read scope when that pull is wired.
+const XERO_SCOPES = "offline_access accounting.reports.profitandloss.read";
 
 // ---------------------------------------------------------------------------
 // Entry point
