@@ -5,13 +5,13 @@ name = "slipstream-wholesale-dashboard"
 main = "worker.js"
 compatibility_date = "2025-07-01"
 
-# Token + data store. Cloudflare auto-provisions this KV namespace on the first
-# Workers Build from the repo. AFTER the first deploy, read the generated id from
-# the Cloudflare dashboard and paste it below (replace PIN_AFTER_FIRST_DEPLOY) so
-# later deploys reuse it instead of orphaning the saved password/tokens.
+# Token + data store. With no id set, Cloudflare auto-provisions this KV
+# namespace on the first Workers Build and links it to the Worker (needs
+# wrangler >= 4.45). AFTER the first successful deploy, pin the generated id
+# here (read it from the Cloudflare dashboard) so later deploys always reuse the
+# same store and never orphan the saved password/tokens.
 [[kv_namespaces]]
 binding = "TOKENS"
-id = "PIN_AFTER_FIRST_DEPLOY"
 
 # Serve the dashboard page as text bundled with the Worker.
 [[rules]]
@@ -28,4 +28,4 @@ globs = ["dashboard.html"]
 
 # Beer30 scheduled-pull hook (rung 2). Uncomment when a stable export URL is wired.
 # [triggers]
-# crons = ["0 15 * * *"]
+# crons = [
