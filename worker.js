@@ -44,11 +44,11 @@ const CHANNEL_MAP = {
   "on-premise": "On-Premise",
   "off-premise": "Off-Premise",
   "national retailer": "National Retailer",
-  "distributor": "Wholesale",
+  "distributor": "Distributor",
   "slipstream": "In-House",
 };
 // Ranked external channels; In-House and Direct / Online are shown but not ranked.
-const RANKED_CHANNELS = ["On-Premise", "Off-Premise", "National Retailer", "Wholesale"];
+const RANKED_CHANNELS = ["On-Premise", "Off-Premise", "National Retailer", "Distributor"];
 const UNRANKED_CHANNELS = ["In-House", "Direct / Online"];
 function channelOf(cat) {
   return CHANNEL_MAP[(cat || "").trim().toLowerCase()] || "Direct / Online";
