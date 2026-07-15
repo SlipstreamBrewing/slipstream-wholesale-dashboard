@@ -36,9 +36,27 @@ const WHOLESALE_DIRECT_COSTS = [
 ];
 
 // Granular scopes only (apps created on/after 2 Mar 2026). The P&L report is all
-// the implemented money metrics need. Invoice-count metrics (active accounts,
-// AOV) will add the granular invoices read scope when that pull is wired.
+// the money metrics need; the channel split, volume and counts come from Beer30.
 const XERO_SCOPES = "offline_access accounting.reports.profitandloss.read";
+
+// Beer30 Company_Category -> dashboard channel (owner model, 15 Jul 2026).
+const CHANNEL_MAP = {
+  "on-premise": "On-Premise",
+  "off-premise": "Off-Premise",
+  "national retailer": "National Retailer",
+  "distributor": "Wholesale",
+  "slipstream": "In-House",
+};
+// Ranked external channels; In-House and Direct / Online are shown but not ranked.
+const RANKED_CHANNELS = ["On-Premise", "Off-Premise", "National Retailer", "Wholesale"];
+const UNRANKED_CHANNELS = ["In-House", "Direct / Online"];
+function channelOf(cat) {
+  return CHANNEL_MAP[(cat || "").trim().toLowerCase()] || "Direct / Online";
+}
+function money(s) {
+  const n = parseFloat(String(s == null ? "" : s).replace(/[$,]/g, "").trim());
+  return isNaN(n) ? 0 : n;
+}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -302,58 +320,90 @@ async function xeroPnl(env, token, from, to) {
 }
 
 // ---------------------------------------------------------------------------
-// Beer30 volume (export/ingest mode; live API pull slots in the same shape)
+// Beer30 sales export -> per-channel aggregates (export/ingest; live API later)
+// Stored per day: data:sales:<YYYY-MM-DD> =
+//   { "<channel>": { netInv, kegL, packL, companies:[...], invoices:[...] } }
 // ---------------------------------------------------------------------------
-async function volumeForRange(env, from, to) {
-  // Reads day rows written by /api/ingest: data:volume:<YYYY-MM-DD> = {litresKeg,litresPackage}
-  const list = await env.TOKENS.list({ prefix: "data:volume:" });
-  let litres = 0, keg = 0, pkg = 0, any = false;
+async function salesForRange(env, from, to) {
+  const list = await env.TOKENS.list({ prefix: "data:sales:" });
+  const acc = {};
+  let any = false;
   for (const k of list.keys) {
-    const day = k.name.slice("data:volume:".length);
-    if (day >= from && day <= to) {
-      const row = await env.TOKENS.get(k.name, "json");
-      if (row) { any = true; keg += row.litresKeg || 0; pkg += row.litresPackage || 0; }
+    const day = k.name.slice("data:sales:".length);
+    if (day === "lastSync" || day < from || day > to) continue;
+    const row = await env.TOKENS.get(k.name, "json");
+    if (!row) continue;
+    any = true;
+    for (const [ch, v] of Object.entries(row)) {
+      const a = acc[ch] || (acc[ch] = { netInv: 0, kegL: 0, packL: 0, companies: new Set(), invoices: new Set() });
+      a.netInv += v.netInv || 0; a.kegL += v.kegL || 0; a.packL += v.packL || 0;
+      (v.companies || []).forEach((c) => a.companies.add(c));
+      (v.invoices || []).forEach((i) => a.invoices.add(i));
     }
   }
-  litres = keg + pkg;
-  return any ? { litres, channels: { keg, package: pkg } } : null;
+  if (!any) return null;
+  const channels = {};
+  for (const [ch, a] of Object.entries(acc)) {
+    channels[ch] = {
+      netInv: a.netInv, litres: a.kegL + a.packL, kegL: a.kegL, packL: a.packL,
+      customers: a.companies.size, orders: a.invoices.size,
+    };
+  }
+  return { channels };
 }
 async function handleIngest(request, env) {
   const auth = request.headers.get("Authorization") || "";
   if (!env.INGEST_TOKEN || auth !== `Bearer ${env.INGEST_TOKEN}`)
     return json({ error: { plain: "Upload code missing or wrong." } }, 401);
-  const url = new URL(request.url);
-  const source = url.searchParams.get("source") || "volume";
   const text = await request.text();
-  if (source !== "volume") return json({ error: { plain: "Unknown upload type." } }, 400);
-  const rows = parseVolumeExport(text);
-  for (const r of rows) {
-    await env.TOKENS.put(`data:volume:${r.date}`,
-      JSON.stringify({ litresKeg: r.litresKeg, litresPackage: r.litresPackage }));
+  const days = parseSalesExport(text);
+  const dayCount = Object.keys(days).length;
+  if (!dayCount) return json({ error: { plain: "No rows found - is this the Beer30 sales export?" } }, 400);
+  for (const [date, chans] of Object.entries(days)) {
+    await env.TOKENS.put(`data:sales:${date}`, JSON.stringify(chans));
   }
-  await env.TOKENS.put("data:volume:lastSync", new Date().toISOString());
-  return json({ ok: true, days: rows.length });
+  await env.TOKENS.put("data:sales:lastSync", new Date().toISOString());
+  return json({ ok: true, days: dayCount });
 }
-// Beer30 CSV export → day rows. Expected headers (case-insensitive):
-// date, keg_litres, package_litres  (adjust to the real export at wiring time).
-function parseVolumeExport(text) {
-  const lines = text.trim().split(/\r?\n/);
-  if (lines.length < 2) return [];
-  const head = lines[0].split(",").map((h) => h.trim().toLowerCase());
-  const di = head.findIndex((h) => h.includes("date"));
-  const ki = head.findIndex((h) => h.includes("keg"));
-  const pi = head.findIndex((h) => h.includes("package") || h.includes("packaged") || h.includes("can"));
-  const out = [];
-  for (let i = 1; i < lines.length; i++) {
-    const c = lines[i].split(",");
-    if (!c[di]) continue;
-    const date = normDate(c[di].trim());
+function parseSalesExport(text) {
+  const recs = parseCSV(text);
+  const out = {};
+  for (const r of recs) {
+    const date = normDate((r["Delivery"] || "").trim());
     if (!date) continue;
-    out.push({
-      date,
-      litresKeg: parseFloat(c[ki]) || 0,
-      litresPackage: parseFloat(c[pi]) || 0,
-    });
+    const ch = channelOf(r["Company_Category"]);
+    const isKeg = (r["Package"] || "").trim().toLowerCase() === "keg";
+    const litres = money(r["Vol. (L)"]);
+    const day = out[date] || (out[date] = {});
+    const a = day[ch] || (day[ch] = { netInv: 0, kegL: 0, packL: 0, companies: [], invoices: [] });
+    a.netInv += money(r["Subtotal"]);
+    if (isKeg) a.kegL += litres; else a.packL += litres;
+    const co = (r["Company"] || "").trim(); if (co && !a.companies.includes(co)) a.companies.push(co);
+    const inv = (r["Invoice #"] || "").trim(); if (inv && !a.invoices.includes(inv)) a.invoices.push(inv);
+  }
+  return out;
+}
+function parseCSV(text) {
+  const s = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  const rows = []; let field = "", row = [], inQ = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inQ) {
+      if (c === '"') { if (s[i + 1] === '"') { field += '"'; i++; } else inQ = false; }
+      else field += c;
+    } else if (c === '"') inQ = true;
+    else if (c === ",") { row.push(field); field = ""; }
+    else if (c === "\n") { row.push(field); rows.push(row); row = []; field = ""; }
+    else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  if (!rows.length) return [];
+  const head = rows[0].map((h) => h.trim());
+  const out = [];
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i].length === 1 && rows[i][0] === "") continue;
+    const obj = {}; head.forEach((h, j) => { obj[h] = rows[i][j]; });
+    out.push(obj);
   }
   return out;
 }
@@ -369,7 +419,7 @@ function normDate(s) {
 // ---------------------------------------------------------------------------
 async function status(env) {
   const xt = await env.TOKENS.get("xero:tokens", "json");
-  const vSync = await env.TOKENS.get("data:volume:lastSync");
+  const bSync = await env.TOKENS.get("data:sales:lastSync");
   return json({
     sources: {
       accounting: {
@@ -378,7 +428,7 @@ async function status(env) {
         org: xt?.tenant_name || null,
         sandbox: /demo company/i.test(xt?.tenant_name || ""),
       },
-      volume: { configured: true, connected: !!vSync, source: "Beer30", lastSync: vSync || null },
+      beer30: { configured: true, connected: !!bSync, source: "Beer30", lastSync: bSync || null },
     },
   });
 }
@@ -406,16 +456,17 @@ async function metrics(request, env) {
     lastSync: xt ? new Date().toISOString() : null,
     error: null,
   };
-  const vSync = await env.TOKENS.get("data:volume:lastSync");
-  out.sources.volume = {
-    configured: true, connected: !!vSync, source: "Beer30",
-    lastSync: vSync || null, error: null,
+  const bSync = await env.TOKENS.get("data:sales:lastSync");
+  out.sources.beer30 = {
+    configured: true, connected: !!bSync, source: "Beer30",
+    lastSync: bSync || null, error: null,
+    ranked: RANKED_CHANNELS, unranked: UNRANKED_CHANNELS,
   };
 
   for (const key of ["cur", "prev", "yoy"]) {
     const r = want[key];
     if (!r) continue;
-    out.periods[key] = { accounting: null, volume: null };
+    out.periods[key] = { accounting: null, beer30: null };
     if (token) {
       try {
         out.periods[key].accounting = await xeroPnl(env, token, r.from, r.to);
@@ -424,9 +475,9 @@ async function metrics(request, env) {
       }
     }
     try {
-      out.periods[key].volume = await volumeForRange(env, r.from, r.to);
+      out.periods[key].beer30 = await salesForRange(env, r.from, r.to);
     } catch (e) {
-      out.sources.volume.error = { plain: "Couldn't read the Beer30 volume for this period." };
+      out.sources.beer30.error = { plain: "Couldn't read the Beer30 sales for this period." };
     }
   }
   return json(out);

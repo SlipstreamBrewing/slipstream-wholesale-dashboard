@@ -134,8 +134,8 @@ footer{margin:18px 0 4px;color:var(--muted);font-size:11.5px}
       <p class="sub">If Xero asks for a return address, it's:<br><span class="mono" id="xeroCb"></span></p>
     </div>
     <div class="panel">
-      <h3>Beer30 — your volume in litres</h3>
-      <p class="sub">Drop a Beer30 volume export here to update litres. Enter your upload code once.</p>
+      <h3>Beer30 — sales &amp; channels</h3>
+      <p class="sub">Drop your Beer30 <b>Sales Data Raw</b> export (CSV) here to update channels, volume and accounts. Enter your upload code once.</p>
       <div id="volStatus" class="sub"></div>
       <p style="margin-top:10px">
         <input id="uploadCode" placeholder="Upload code" style="max-width:180px">
@@ -208,19 +208,26 @@ function ranges(period, ws){
 }
 
 // ---------- metric computation (definitions live here) ----------
+const RANKED=["On-Premise","Off-Premise","National Retailer","Wholesale"];
+const UNRANKED=["In-House","Direct / Online"];
 function computeSet(p){
   if(!p) return null;
-  const a=p.accounting, v=p.volume;
+  const a=p.accounting, b=p.beer30;
   const revenue = a? a.revenue : null;
   const grossM = (a && revenue) ? (revenue - a.cogs) : null;
   const grossPct = (a && revenue) ? (revenue - a.cogs)/revenue : null;
   const contribution = a ? (revenue - a.cogs - a.directCosts) : null;
-  const vol = v ? v.litres : null;
-  const accounts = a ? a.accounts : null;          // null → not configured
-  const orders = a ? a.orders : null;
-  const aov = (a && orders) ? revenue/orders : (orders===0? null : null);
-  return { revenue, grossM, grossPct, contribution, vol, accounts, orders, aov,
-    channels:a?a.channels:null, volChannels:v?v.channels:null };
+  const channels = b ? b.channels : null;
+  let vol=null, accounts=null, orders=null, extNet=null, allNet=null;
+  if(channels){
+    vol=0; accounts=0; orders=0; extNet=0; allNet=0;
+    for(const [name,c] of Object.entries(channels)){
+      vol += c.litres||0; allNet += c.netInv||0;
+      if(RANKED.includes(name)){ accounts += c.customers||0; orders += c.orders||0; extNet += c.netInv||0; }
+    }
+  }
+  const aov = orders ? extNet/orders : (orders===0? null : null);
+  return { revenue, grossM, grossPct, contribution, vol, accounts, orders, aov, extNet, allNet, channels };
 }
 function deltaHTML(cur,prev,yoy,fmt,invert){
   const line=(base,tag)=>{
@@ -247,7 +254,7 @@ async function load(){
 
   const cur=computeSet(data.periods.cur), prev=computeSet(data.periods.prev), yoy=computeSet(data.periods.yoy);
   renderCards(cur,prev,yoy);
-  renderChannels(cur);
+  renderChannels(cur,prev,yoy);
   renderTrend(yoy,prev,cur);
   renderSync(data.sources);
   renderVerify(data.sources);
@@ -264,24 +271,38 @@ function renderCards(cur,prev,yoy){
     card("Wholesale revenue (ex-GST)", valOr(c.revenue,money), c.revenue,p.revenue,y.revenue),
     card("Gross margin %", gmVal, c.grossPct,p.grossPct,y.grossPct),
     card("Wholesale contribution", valOr(c.contribution,money), c.contribution,p.contribution,y.contribution),
-    card("Volume sold", valOr(c.vol,litres), c.vol,p.vol,y.vol),
-    card("Active accounts", valOr(c.accounts,(n)=>n), c.accounts,p.accounts,y.accounts),
-    card("Average order value", valOr(c.aov,money), c.aov,p.aov,y.aov),
+    card("Volume sold (all channels)", valOr(c.vol,litres), c.vol,p.vol,y.vol),
+    card("Active accounts (external)", valOr(c.accounts,(n)=>n), c.accounts,p.accounts,y.accounts),
+    card("Average order value (external)", valOr(c.aov,money), c.aov,p.aov,y.aov),
   ].join("");
   $("#cards").innerHTML = html;
 }
-function renderChannels(cur){
+function chanDelta(name,cur,prev){
+  const c=cur&&cur.channels&&cur.channels[name], p=prev&&prev.channels&&prev.channels[name];
+  if(!c||!p||!p.netInv) return "";
+  const d=(c.netInv-p.netInv)/Math.abs(p.netInv), up=d>=0;
+  return ` <span class="${Math.abs(d)<0.0005?'flat':(up?'up':'down')}">${up?'▲':'▼'}${(Math.abs(d)*100).toFixed(0)}%</span>`;
+}
+function renderChannels(cur,prev,yoy){
+  const box=$("#channels");
   const ch = cur && cur.channels;
-  if(!ch){ $("#channels").innerHTML=`<div class="c"><div class="v na">Not configured</div></div>`; return; }
-  const total = cur.revenue||0;
-  const vc = cur.volChannels||{};
-  const cell=(name,dollars,l)=>`<div class="c"><div class="label">${name}</div>
-     <div class="v">${money(dollars)}</div>
-     <div class="s">${total? ((dollars/total)*100).toFixed(0):0}% of revenue${l!=null?` · ${litres(l)}`:""}</div></div>`;
-  $("#channels").innerHTML =
-    cell("Keg / draught", ch.keg, vc.keg) +
-    cell("Packaged", ch.package, vc.package) +
-    cell("General wholesale", ch.general, null);
+  if(!ch){ box.innerHTML=`<div class="c"><div class="v na">Not configured - upload your Beer30 sales export</div></div>`; return; }
+  const extNet = cur.extNet||0;
+  const cell=(name,c,rank)=>`<div class="c"><div class="label">${rank?rank+". ":""}${name}</div>
+     <div class="v">${money(c.netInv)}</div>
+     <div class="s">${extNet?((c.netInv/extNet)*100).toFixed(0):0}% of external · ${litres(c.litres)}${chanDelta(name,cur,prev)}</div></div>`;
+  const ranked=RANKED.filter(n=>ch[n]).map(n=>[n,ch[n]]).sort((a,b)=>b[1].netInv-a[1].netInv);
+  let html=ranked.map(([n,c],i)=>cell(n,c,i+1)).join("");
+  const un=UNRANKED.filter(n=>ch[n]);
+  if(un.length){
+    html+=`<div class="c" style="grid-column:1/-1;border-top:1px dashed var(--line);padding-top:6px;color:var(--muted);font-size:11px">Shown, not ranked</div>`;
+    html+=un.map(n=>{const c=ch[n];return `<div class="c"><div class="label">${n}</div><div class="v">${money(c.netInv)}</div><div class="s">${litres(c.litres)}${n==="Direct / Online"?' · <span style="color:var(--bad)">tag these in Beer30</span>':''}</div></div>`;}).join("");
+  }
+  if(cur.revenue!=null && cur.allNet!=null){
+    const diff=cur.allNet-cur.revenue, pc=cur.revenue?diff/cur.revenue*100:0;
+    html+=`<div class="c" style="grid-column:1/-1;border-top:1px solid var(--line);padding-top:6px;font-size:11px;color:var(--muted)">Reconcile: Beer30 all-channel net ${money(cur.allNet)} vs Xero wholesale ${money(cur.revenue)} · ${diff>=0?'+':''}${pc.toFixed(1)}% (Xero wholesale accounts cover all dispatch, incl. In-House)</div>`;
+  }
+  box.innerHTML=html;
 }
 function renderTrend(y,p,c){
   const ctx=$("#trend");
@@ -296,20 +317,21 @@ function renderTrend(y,p,c){
       scales:{y:{position:'left',title:{display:true,text:'$'}},y1:{position:'right',title:{display:true,text:'L'},grid:{drawOnChartArea:false}}}}});
 }
 function renderSync(src){
-  const a=src.accounting, v=src.volume;
+  const a=src.accounting, b=src.beer30;
   const t=(x)=> x? new Date(x).toLocaleString("en-AU"):"—";
   $("#syncLine").innerHTML = `Xero: ${a.connected? (a.org||"connected"):"not connected"} · last sync ${t(a.lastSync)}`
-    + `  |  Beer30 volume: ${v.connected?"synced":"not connected"} · ${t(v.lastSync)}`
+    + `  |  Beer30: ${b.connected?"synced":"not connected"} · ${t(b.lastSync)}`
     + (a.sandbox? ` <b style="color:var(--bad)">⚠ looks like a Xero Demo Company</b>`:"");
 }
-const METRIC_KEYS=[["revenue","Wholesale revenue"],["margin","Gross margin %"],["contribution","Contribution"],["volume","Volume (litres)"],["channels","Sales by channel"]];
+const METRIC_KEYS=[["revenue","Wholesale revenue (Xero)"],["margin","Gross margin %"],["contribution","Contribution"],["channels","Sales by channel (Beer30)"],["volume","Volume (litres)"],["accounts","Active accounts & AOV"]];
+const B30_KEYS=["channels","volume","accounts"];
 function renderVerify(src){
   const v=S.verified||{};
-  const connectedMoney = src.accounting.connected;
-  const need = METRIC_KEYS.filter(([k])=> k!=="volume" ? connectedMoney : src.volume.connected);
+  const connectedMoney = src.accounting.connected, connectedB = src.beer30.connected;
+  const need = METRIC_KEYS.filter(([k])=> B30_KEYS.includes(k) ? connectedB : connectedMoney);
   const pending = need.filter(([k])=> !v[k]);
   const b=$("#verifyBanner");
-  if(!connectedMoney && !src.volume.connected){ b.className="banner warn"; b.classList.remove("hide"); b.textContent="Connect Xero to light up your money numbers."; return; }
+  if(!connectedMoney && !connectedB){ b.className="banner warn"; b.classList.remove("hide"); b.textContent="Connect Xero and upload your Beer30 sales to light up the board."; return; }
   if(pending.length){ b.className="banner warn"; b.classList.remove("hide");
     b.textContent=`Unverified — ${pending.length} metric(s) still need checking against your own reports.`; }
   else { b.className="banner ok"; b.classList.remove("hide"); b.textContent="✓ Verified — every connected metric has been checked."; }
@@ -317,7 +339,7 @@ function renderVerify(src){
 function renderCheck(cur,src){
   const v=S.verified||{};
   const rows=METRIC_KEYS.map(([k,name])=>{
-    const connected = k==="volume"? src.volume.connected : src.accounting.connected;
+    const connected = B30_KEYS.includes(k)? src.beer30.connected : src.accounting.connected;
     const dis = connected? "" : "disabled";
     const tag = connected? "" : `<span class="pill na">not connected</span>`;
     return `<label class="chk"><input type="checkbox" data-vk="${k}" ${v[k]?"checked":""} ${dis}>
@@ -339,11 +361,11 @@ document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
 // ---------- connections ----------
 async function refreshConn(){
   const s=await fetch("/api/status").then(r=>r.json());
-  const a=s.sources.accounting, v=s.sources.volume;
+  const a=s.sources.accounting, b=s.sources.beer30;
   $("#xeroStatus").innerHTML = a.connected? `Connected: <b>${a.org||"your organisation"}</b>${a.sandbox?' <span style="color:var(--bad)">(looks like Demo Company — reconnect the real org)</span>':""}` : (a.configured?"Not connected yet.":"Not set up yet.");
   $("#xeroConnect").classList.toggle("hide", a.connected);
   $("#xeroDisconnect").classList.toggle("hide", !a.connected);
-  $("#volStatus").textContent = v.connected? `Last volume sync: ${new Date(v.lastSync).toLocaleString("en-AU")}` : "No volume uploaded yet.";
+  $("#volStatus").textContent = b.connected? `Last Beer30 sync: ${new Date(b.lastSync).toLocaleString("en-AU")}` : "No sales data uploaded yet.";
   $("#xeroCb").textContent = location.origin+"/auth/xero/callback";
 }
 $("#xeroConnect").onclick=()=> location.href="/auth/xero/begin";
@@ -353,7 +375,7 @@ $("#volUpload").onclick=async()=>{
   $("#volErr").classList.add("hide");
   if(!f||!code){ $("#volErr").textContent="Pick a file and enter your upload code."; $("#volErr").classList.remove("hide"); return; }
   const text=await f.text();
-  const res=await fetch("/api/ingest?source=volume",{method:"POST",headers:{"Authorization":"Bearer "+code},body:text});
+  const res=await fetch("/api/ingest?source=sales",{method:"POST",headers:{"Authorization":"Bearer "+code},body:text});
   if(!res.ok){ const e=await res.json().catch(()=>({})); $("#volErr").textContent=(e.error&&e.error.plain)||"Upload failed."; $("#volErr").classList.remove("hide"); return; }
   S.uploadCode=code; saveS(); refreshConn(); load();
 };
