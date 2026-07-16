@@ -190,7 +190,7 @@ let trendChart;
 function saveS(){ localStorage.setItem("slipWholesale", JSON.stringify(S)); }
 
 // ---------- date ranges (Brisbane-ish; week start configurable) ----------
-function ymd(d){ return d.toISOString().slice(0,10); }
+function ymd(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
 function addDays(d,n){ const x=new Date(d); x.setDate(x.getDate()+n); return x; }
 function startOfWeek(d,ws){ const x=new Date(d); const day=(x.getDay()-ws+7)%7; return addDays(x,-day); }
 function fyStart(d){ const y=d.getMonth()>=6?d.getFullYear():d.getFullYear()-1; return new Date(y,6,1); }
