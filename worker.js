@@ -510,27 +510,31 @@ async function beer30Test(env) {
   }
 }
 
-// TEMP diagnostic: probe several Beer30 endpoints + show host, to map the adapter.
+// TEMP diagnostic: dump one company + one order + one order detail to map fields.
 async function beer30Sample(env) {
   const key = (env.BEER30_KEY || "").trim();
   const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
   if (!key) return json({ error: { plain: "No Beer30 key set." } });
   const get = async (path) => {
     const sep = path.includes("?") ? "&" : "?";
-    const url = `${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`;
-    try {
-      const r = await fetch(url, { headers: { Accept: "application/json" } });
-      const t = await r.text();
-      let d = null; try { d = JSON.parse(t); } catch {}
-      return { status: r.status, reason: d?.response?.reason || d?.response?.message, keys: d ? Object.keys(d) : null, sample: d ? undefined : t.slice(0, 200) };
-    } catch (e) { return { error: String(e) }; }
+    const r = await fetch(`${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`, { headers: { Accept: "application/json" } });
+    const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch {}
+    return d;
   };
-  const out = { host: base, keyLen: key.length };
-  out["/base"] = await get("/base");
-  out["/companies"] = await get("/companies");
-  out["/distribution"] = await get("/distribution");
-  out["/distribution/orders"] = await get("/distribution/orders");
-  out["/distribution/orders(90d default)"] = await get("/distribution/orders?type=PUBLISHED");
+  const out = {};
+  const comp = await get("/companies");
+  const carr = comp && (comp.companies || comp.data || (Array.isArray(comp) ? comp : null));
+  out.companyKeys = Array.isArray(carr) && carr[0] ? Object.keys(carr[0]) : null;
+  out.company0 = Array.isArray(carr) ? carr[0] : comp;
+  const ord = await get("/distribution/orders?type=PUBLISHED");
+  const oarr = ord && (ord.orders || ord.data || (Array.isArray(ord) ? ord : null));
+  out.orderCount = Array.isArray(oarr) ? oarr.length : null;
+  out.orderKeys = Array.isArray(oarr) && oarr[0] ? Object.keys(oarr[0]) : null;
+  out.order0 = Array.isArray(oarr) ? oarr[0] : ord;
+  const o0 = Array.isArray(oarr) ? oarr[0] : null;
+  const id = o0 ? (o0.id ?? o0["order-id"] ?? o0.order_id ?? o0["order-number"] ?? o0.orderId) : null;
+  out.firstOrderId = id;
+  if (id != null) out.orderDetail = await get(`/distribution/orders/${id}`);
   return json(out);
 }
 
