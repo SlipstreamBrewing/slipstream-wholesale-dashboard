@@ -106,6 +106,7 @@ async function route(request, env, ctx) {
   if (p === "/api/metrics") return metrics(request, env);
   if (p === "/api/status") return status(env);
   if (p === "/api/beer30/test") return beer30Test(env);
+  if (p === "/api/beer30/sample") return beer30Sample(env);
   if (p === "/auth/xero/begin") return xeroBegin(request, env);
   if (p === "/auth/xero/callback") return xeroCallback(request, env);
   if (p === "/api/disconnect" && request.method === "POST") return disconnect(request, env);
@@ -507,6 +508,35 @@ async function beer30Test(env) {
   } catch (e) {
     return json({ ok: false, error: { plain: "Couldn't reach Beer30 (" + (e.message || "network error") + ")." } });
   }
+}
+
+// TEMP diagnostic: capture live Beer30 sample shapes so the adapter maps correctly.
+async function beer30Sample(env) {
+  const key = (env.BEER30_KEY || "").trim();
+  const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
+  if (!key) return json({ error: { plain: "No Beer30 key set." } });
+  const get = async (path) => {
+    const sep = path.includes("?") ? "&" : "?";
+    const r = await fetch(`${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`, { headers: { Accept: "application/json" } });
+    const t = await r.text();
+    let d = null; try { d = JSON.parse(t); } catch {}
+    return { status: r.status, data: d, raw: d ? undefined : t.slice(0, 400) };
+  };
+  const out = {};
+  out.companies = await get("/companies");
+  out.orders = await get("/distribution/orders?type=PUBLISHED&delivery-date-start=2026-06-01&delivery-date-end=2026-06-30");
+  try {
+    const d = out.orders.data;
+    const arr = d && (d.orders || d.data || d.results || (Array.isArray(d) ? d : null));
+    let id = Array.isArray(arr) && arr[0] ? (arr[0].id ?? arr[0]["order-id"] ?? arr[0]["order-number"] ?? arr[0].order_id) : null;
+    out.firstOrderId = id;
+    if (id != null) out.orderDetail = await get(`/distribution/orders/${id}`);
+    // trim big lists to keep readable
+    if (Array.isArray(arr)) out.orders.data = { count: arr.length, sample: arr.slice(0, 2) };
+    const carr = out.companies.data && (out.companies.data.companies || out.companies.data.data || (Array.isArray(out.companies.data) ? out.companies.data : null));
+    if (Array.isArray(carr)) out.companies.data = { count: carr.length, sample: carr.slice(0, 3) };
+  } catch (e) { out.trimErr = String(e); }
+  return json(out);
 }
 
 // ---------------------------------------------------------------------------
