@@ -510,32 +510,27 @@ async function beer30Test(env) {
   }
 }
 
-// TEMP diagnostic: capture live Beer30 sample shapes so the adapter maps correctly.
+// TEMP diagnostic: probe several Beer30 endpoints + show host, to map the adapter.
 async function beer30Sample(env) {
   const key = (env.BEER30_KEY || "").trim();
   const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
   if (!key) return json({ error: { plain: "No Beer30 key set." } });
   const get = async (path) => {
     const sep = path.includes("?") ? "&" : "?";
-    const r = await fetch(`${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`, { headers: { Accept: "application/json" } });
-    const t = await r.text();
-    let d = null; try { d = JSON.parse(t); } catch {}
-    return { status: r.status, data: d, raw: d ? undefined : t.slice(0, 400) };
+    const url = `${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`;
+    try {
+      const r = await fetch(url, { headers: { Accept: "application/json" } });
+      const t = await r.text();
+      let d = null; try { d = JSON.parse(t); } catch {}
+      return { status: r.status, reason: d?.response?.reason || d?.response?.message, keys: d ? Object.keys(d) : null, sample: d ? undefined : t.slice(0, 200) };
+    } catch (e) { return { error: String(e) }; }
   };
-  const out = {};
-  out.companies = await get("/companies");
-  out.orders = await get("/distribution/orders?type=PUBLISHED&delivery-date-start=2026-06-01&delivery-date-end=2026-06-30");
-  try {
-    const d = out.orders.data;
-    const arr = d && (d.orders || d.data || d.results || (Array.isArray(d) ? d : null));
-    let id = Array.isArray(arr) && arr[0] ? (arr[0].id ?? arr[0]["order-id"] ?? arr[0]["order-number"] ?? arr[0].order_id) : null;
-    out.firstOrderId = id;
-    if (id != null) out.orderDetail = await get(`/distribution/orders/${id}`);
-    // trim big lists to keep readable
-    if (Array.isArray(arr)) out.orders.data = { count: arr.length, sample: arr.slice(0, 2) };
-    const carr = out.companies.data && (out.companies.data.companies || out.companies.data.data || (Array.isArray(out.companies.data) ? out.companies.data : null));
-    if (Array.isArray(carr)) out.companies.data = { count: carr.length, sample: carr.slice(0, 3) };
-  } catch (e) { out.trimErr = String(e); }
+  const out = { host: base, keyLen: key.length };
+  out["/base"] = await get("/base");
+  out["/companies"] = await get("/companies");
+  out["/distribution"] = await get("/distribution");
+  out["/distribution/orders"] = await get("/distribution/orders");
+  out["/distribution/orders(90d default)"] = await get("/distribution/orders?type=PUBLISHED");
   return json(out);
 }
 
