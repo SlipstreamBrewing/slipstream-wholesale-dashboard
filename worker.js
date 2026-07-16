@@ -488,17 +488,20 @@ async function metrics(request, env) {
 // Beer30 API connection test (live-API feasibility; key stays a Worker secret)
 // ---------------------------------------------------------------------------
 async function beer30Test(env) {
-  if (!env.BEER30_KEY)
+  const key = (env.BEER30_KEY || "").trim();
+  if (!key)
     return json({ ok: false, error: { plain: "No Beer30 API key set yet. Add BEER30_KEY in Cloudflare > Settings > Variables and Secrets." } });
-  const base = (env.BEER30_BASE || "https://api.b30.app").replace(/\/+$/, "");
+  const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
   try {
-    const url = `${base}/base?format=json&key=${encodeURIComponent(env.BEER30_KEY)}`;
+    const url = `${base}/base?format=json&key=${encodeURIComponent(key)}`;
     const r = await fetch(url, { headers: { Accept: "application/json" } });
     const txt = await r.text();
     let data = null; try { data = JSON.parse(txt); } catch {}
-    if (!r.ok)
+    if (!r.ok) {
+      const msg = data?.response?.message || data?.message || (txt || "").replace(/\s+/g, " ").trim().slice(0, 160);
       return json({ ok: false, status: r.status,
-        error: { plain: `Beer30 replied ${r.status}. ${data?.response?.message || "Check the key and try again."}` } });
+        error: { plain: `Beer30 replied ${r.status}. ${msg || "no message body"} [key length ${key.length}, host ${base}]` } });
+    }
     const endpoints = data && Array.isArray(data.api) ? data.api.length : null;
     return json({ ok: true, status: r.status, endpoints, message: data?.response?.message || "success" });
   } catch (e) {
