@@ -12,6 +12,7 @@ compatibility_date = "2025-07-01"
 # same store and never orphan the saved password/tokens.
 [[kv_namespaces]]
 binding = "TOKENS"
+id = "05edeb99e98d478cae3873955bada2f6"
 
 # Non-secret config, safe in the repo and applied on every deploy (dashboard
 # plain-text variables get wiped by `wrangler deploy`, so config lives here).
