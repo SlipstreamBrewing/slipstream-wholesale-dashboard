@@ -321,7 +321,7 @@ function renderSync(src){
   const a=src.accounting, b=src.beer30;
   const t=(x)=> x? new Date(x).toLocaleString("en-AU"):"—";
   $("#syncLine").innerHTML = `Xero: ${a.connected? (a.org||"connected"):"not connected"} · last sync ${t(a.lastSync)}`
-    + `  |  Beer30: ${b.connected?"synced":"not connected"} · ${t(b.lastSync)}`
+    + `  |  Beer30: ${b.connected?(b.mode==="api"?"live API":"synced"):"not connected"} · ${t(b.lastSync)}`
     + (a.sandbox? ` <b style="color:var(--bad)">⚠ looks like a Xero Demo Company</b>`:"");
 }
 const METRIC_KEYS=[["revenue","Wholesale revenue (Xero)"],["margin","Gross margin %"],["contribution","Contribution"],["channels","Sales by channel (Beer30)"],["volume","Volume (litres)"],["accounts","Active accounts & AOV"]];
@@ -366,7 +366,7 @@ async function refreshConn(){
   $("#xeroStatus").innerHTML = a.connected? `Connected: <b>${a.org||"your organisation"}</b>${a.sandbox?' <span style="color:var(--bad)">(looks like Demo Company — reconnect the real org)</span>':""}` : (a.configured?"Not connected yet.":"Not set up yet.");
   $("#xeroConnect").classList.toggle("hide", a.connected);
   $("#xeroDisconnect").classList.toggle("hide", !a.connected);
-  $("#volStatus").textContent = b.connected? `Last Beer30 sync: ${new Date(b.lastSync).toLocaleString("en-AU")}` : "No sales data uploaded yet.";
+  $("#volStatus").textContent = b.connected? `${b.mode==="api"?"Live API connected":"Last upload"}: ${new Date(b.lastSync).toLocaleString("en-AU")}` : "No sales data uploaded yet.";
   $("#xeroCb").textContent = location.origin+"/auth/xero/callback";
 }
 $("#xeroConnect").onclick=()=> location.href="/auth/xero/begin";

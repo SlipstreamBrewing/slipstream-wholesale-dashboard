@@ -106,7 +106,6 @@ async function route(request, env, ctx) {
   if (p === "/api/metrics") return metrics(request, env);
   if (p === "/api/status") return status(env);
   if (p === "/api/beer30/test") return beer30Test(env);
-  if (p === "/api/beer30/sample") return beer30Sample(env);
   if (p === "/auth/xero/begin") return xeroBegin(request, env);
   if (p === "/auth/xero/callback") return xeroCallback(request, env);
   if (p === "/api/disconnect" && request.method === "POST") return disconnect(request, env);
@@ -417,11 +416,81 @@ function normDate(s) {
 }
 
 // ---------------------------------------------------------------------------
+// Beer30 live API adapter (channels from /companies + /distribution/orders)
+// ---------------------------------------------------------------------------
+async function b30Get(env, path) {
+  const key = (env.BEER30_KEY || "").trim();
+  const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
+  const sep = path.includes("?") ? "&" : "?";
+  const r = await fetch(`${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`, { headers: { Accept: "application/json" } });
+  if (!r.ok) throw new Error(`Beer30 ${path} -> ${r.status}`);
+  return r.json();
+}
+function litresPerUnit(pkg) {
+  const p = (pkg || "").toLowerCase();
+  const mml = p.match(/(\d+(?:\.\d+)?)\s*-?\s*ml/);
+  if (mml) {
+    const ml = parseFloat(mml[1]);
+    let mult = 1;
+    const br = p.match(/\[([^\]]+)\]/);
+    if (br) { const nums = br[1].match(/\d+/g) || []; mult = nums.reduce((a, n) => a * parseInt(n, 10), 1) || 1; }
+    else { const xs = p.match(/(\d+)\s*x\s*(\d+)/); if (xs) mult = parseInt(xs[1], 10) * parseInt(xs[2], 10); }
+    return (ml * mult) / 1000;
+  }
+  const m = p.match(/(\d+(?:\.\d+)?)\s*-?\s*l\b/);
+  if (m && !p.includes("ml")) return parseFloat(m[1]);
+  return 0;
+}
+function isKegPkg(pkg) {
+  const p = (pkg || "").toLowerCase();
+  return p.includes("keg") || (/(\d+(?:\.\d+)?)\s*-?\s*l\b/.test(p) && !p.includes("ml"));
+}
+async function fetchBeer30Companies(env) {
+  const cj = await b30Get(env, "/companies");
+  const arr = (cj && cj.companies && (cj.companies.Company || cj.companies)) || [];
+  const catOf = {};
+  for (const c of arr) catOf[c["company-id"]] = c.category;
+  return catOf;
+}
+async function fetchBeer30Orders(env, from, to, catOf) {
+  const acc = {};
+  const limit = 1000;
+  let offset = 0;
+  for (let page = 0; page < 50; page++) {
+    const oj = await b30Get(env, `/distribution/orders?type=PUBLISHED&delivery-date-start=${from}&delivery-date-end=${to}&limit=${limit}&offset=${offset}`);
+    const orders = (oj && oj.orders) || [];
+    for (const o of orders) {
+      const st = (o.status || "").toUpperCase();
+      if (st === "VOIDED" || st === "DECLINED") continue;
+      const ch = channelOf(catOf[o["company-id"]]);
+      const a = acc[ch] || (acc[ch] = { netInv: 0, kegL: 0, packL: 0, companies: new Set(), invoices: new Set() });
+      a.companies.add(o["company-id"]); a.invoices.add(o["order-id"]);
+      for (const it of (o.items || [])) {
+        const qty = parseFloat(it.quantity) || 0;
+        const price = parseFloat(it.price) || 0;
+        a.netInv += qty * price;
+        const litres = litresPerUnit(it.package) * qty;
+        if (isKegPkg(it.package)) a.kegL += litres; else a.packL += litres;
+      }
+    }
+    if (orders.length < limit) break;
+    offset += limit;
+  }
+  if (!Object.keys(acc).length) return null;
+  const channels = {};
+  for (const [ch, a] of Object.entries(acc)) {
+    channels[ch] = { netInv: a.netInv, litres: a.kegL + a.packL, kegL: a.kegL, packL: a.packL, customers: a.companies.size, orders: a.invoices.size };
+  }
+  return { channels };
+}
+
+// ---------------------------------------------------------------------------
 // Status + metrics API (the agreed contract)
 // ---------------------------------------------------------------------------
 async function status(env) {
   const xt = await env.TOKENS.get("xero:tokens", "json");
   const bSync = await env.TOKENS.get("data:sales:lastSync");
+  const apiOn = !!(env.BEER30_KEY && ("" + env.BEER30_KEY).trim());
   return json({
     sources: {
       accounting: {
@@ -430,7 +499,7 @@ async function status(env) {
         org: xt?.tenant_name || null,
         sandbox: /demo company/i.test(xt?.tenant_name || ""),
       },
-      beer30: { configured: true, connected: !!bSync, source: "Beer30", lastSync: bSync || null },
+      beer30: { configured: true, connected: apiOn || !!bSync, mode: apiOn ? "api" : (bSync ? "upload" : null), source: "Beer30", lastSync: apiOn ? new Date().toISOString() : (bSync || null) },
     },
   });
 }
@@ -459,11 +528,20 @@ async function metrics(request, env) {
     error: null,
   };
   const bSync = await env.TOKENS.get("data:sales:lastSync");
+  const apiOn = !!(env.BEER30_KEY && ("" + env.BEER30_KEY).trim());
   out.sources.beer30 = {
-    configured: true, connected: !!bSync, source: "Beer30",
-    lastSync: bSync || null, error: null,
+    configured: true, connected: apiOn || !!bSync, source: "Beer30",
+    mode: apiOn ? "api" : (bSync ? "upload" : null),
+    lastSync: apiOn ? new Date().toISOString() : (bSync || null), error: null,
     ranked: RANKED_CHANNELS, unranked: UNRANKED_CHANNELS,
   };
+
+  // Live API: fetch the company->channel map once, reuse across periods.
+  let catOf = null;
+  if (apiOn) {
+    try { catOf = await fetchBeer30Companies(env); }
+    catch (e) { out.sources.beer30.error = { plain: "Couldn't reach Beer30 for the account list; showing last upload." }; }
+  }
 
   for (const key of ["cur", "prev", "yoy"]) {
     const r = want[key];
@@ -477,7 +555,12 @@ async function metrics(request, env) {
       }
     }
     try {
-      out.periods[key].beer30 = await salesForRange(env, r.from, r.to);
+      let live = null;
+      if (catOf) {
+        try { live = await fetchBeer30Orders(env, r.from, r.to, catOf); }
+        catch (e) { out.sources.beer30.error = { plain: "Live Beer30 pull failed for a period; showing last upload where available." }; }
+      }
+      out.periods[key].beer30 = live || await salesForRange(env, r.from, r.to);
     } catch (e) {
       out.sources.beer30.error = { plain: "Couldn't read the Beer30 sales for this period." };
     }
@@ -508,34 +591,6 @@ async function beer30Test(env) {
   } catch (e) {
     return json({ ok: false, error: { plain: "Couldn't reach Beer30 (" + (e.message || "network error") + ")." } });
   }
-}
-
-// TEMP diagnostic: dump one company + one order + one order detail to map fields.
-async function beer30Sample(env) {
-  const key = (env.BEER30_KEY || "").trim();
-  const base = (env.BEER30_BASE || "https://api.b30.app").trim().replace(/\/+$/, "");
-  if (!key) return json({ error: { plain: "No Beer30 key set." } });
-  const get = async (path) => {
-    const sep = path.includes("?") ? "&" : "?";
-    const r = await fetch(`${base}${path}${sep}format=json&key=${encodeURIComponent(key)}`, { headers: { Accept: "application/json" } });
-    const t = await r.text(); let d = null; try { d = JSON.parse(t); } catch {}
-    return d;
-  };
-  const out = {};
-  const comp = await get("/companies");
-  const carr = comp && (comp.companies || comp.data || (Array.isArray(comp) ? comp : null));
-  out.companyKeys = Array.isArray(carr) && carr[0] ? Object.keys(carr[0]) : null;
-  out.company0 = Array.isArray(carr) ? carr[0] : comp;
-  const ord = await get("/distribution/orders?type=PUBLISHED");
-  const oarr = ord && (ord.orders || ord.data || (Array.isArray(ord) ? ord : null));
-  out.orderCount = Array.isArray(oarr) ? oarr.length : null;
-  out.orderKeys = Array.isArray(oarr) && oarr[0] ? Object.keys(oarr[0]) : null;
-  out.order0 = Array.isArray(oarr) ? oarr[0] : ord;
-  const o0 = Array.isArray(oarr) ? oarr[0] : null;
-  const id = o0 ? (o0.id ?? o0["order-id"] ?? o0.order_id ?? o0["order-number"] ?? o0.orderId) : null;
-  out.firstOrderId = id;
-  if (id != null) out.orderDetail = await get(`/distribution/orders/${id}`);
-  return json(out);
 }
 
 // ---------------------------------------------------------------------------
