@@ -105,6 +105,7 @@ async function route(request, env, ctx) {
   if (p === "/") return html(PAGE);
   if (p === "/api/metrics") return metrics(request, env);
   if (p === "/api/status") return status(env);
+  if (p === "/api/beer30/test") return beer30Test(env);
   if (p === "/auth/xero/begin") return xeroBegin(request, env);
   if (p === "/auth/xero/callback") return xeroCallback(request, env);
   if (p === "/api/disconnect" && request.method === "POST") return disconnect(request, env);
@@ -481,6 +482,28 @@ async function metrics(request, env) {
     }
   }
   return json(out);
+}
+
+// ---------------------------------------------------------------------------
+// Beer30 API connection test (live-API feasibility; key stays a Worker secret)
+// ---------------------------------------------------------------------------
+async function beer30Test(env) {
+  if (!env.BEER30_KEY)
+    return json({ ok: false, error: { plain: "No Beer30 API key set yet. Add BEER30_KEY in Cloudflare > Settings > Variables and Secrets." } });
+  const base = (env.BEER30_BASE || "https://api.b30.app").replace(/\/+$/, "");
+  try {
+    const url = `${base}/base?format=json&key=${encodeURIComponent(env.BEER30_KEY)}`;
+    const r = await fetch(url, { headers: { Accept: "application/json" } });
+    const txt = await r.text();
+    let data = null; try { data = JSON.parse(txt); } catch {}
+    if (!r.ok)
+      return json({ ok: false, status: r.status,
+        error: { plain: `Beer30 replied ${r.status}. ${data?.response?.message || "Check the key and try again."}` } });
+    const endpoints = data && Array.isArray(data.api) ? data.api.length : null;
+    return json({ ok: true, status: r.status, endpoints, message: data?.response?.message || "success" });
+  } catch (e) {
+    return json({ ok: false, error: { plain: "Couldn't reach Beer30 (" + (e.message || "network error") + ")." } });
+  }
 }
 
 // ---------------------------------------------------------------------------

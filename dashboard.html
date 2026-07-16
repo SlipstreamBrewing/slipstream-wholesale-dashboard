@@ -137,6 +137,7 @@ footer{margin:18px 0 4px;color:var(--muted);font-size:11.5px}
       <h3>Beer30 — sales &amp; channels</h3>
       <p class="sub">Drop your Beer30 <b>Sales Data Raw</b> export (CSV) here to update channels, volume and accounts. Enter your upload code once.</p>
       <div id="volStatus" class="sub"></div>
+      <p style="margin-top:8px"><button id="b30Test">Test Beer30 API connection</button> <span id="b30TestResult" class="sub"></span></p>
       <p style="margin-top:10px">
         <input id="uploadCode" placeholder="Upload code" style="max-width:180px">
         <input type="file" id="volFile" accept=".csv,text/csv">
@@ -378,6 +379,14 @@ $("#volUpload").onclick=async()=>{
   const res=await fetch("/api/ingest?source=sales",{method:"POST",headers:{"Authorization":"Bearer "+code},body:text});
   if(!res.ok){ const e=await res.json().catch(()=>({})); $("#volErr").textContent=(e.error&&e.error.plain)||"Upload failed."; $("#volErr").classList.remove("hide"); return; }
   S.uploadCode=code; saveS(); refreshConn(); load();
+};
+$("#b30Test").onclick=async()=>{
+  $("#b30TestResult").textContent="Testing…";
+  try{
+    const r=await fetch("/api/beer30/test").then(x=>x.json());
+    if(r.ok){ $("#b30TestResult").innerHTML=`<span style="color:var(--good)">✓ Connected${r.endpoints!=null?" — "+r.endpoints+" endpoints available":""}</span>`; }
+    else { $("#b30TestResult").innerHTML=`<span style="color:var(--bad)">${(r.error&&r.error.plain)||"Failed"}</span>`; }
+  }catch(e){ $("#b30TestResult").innerHTML=`<span style="color:var(--bad)">Test failed to run</span>`; }
 };
 
 // ---------- settings ----------
