@@ -13,6 +13,13 @@ compatibility_date = "2025-07-01"
 [[kv_namespaces]]
 binding = "TOKENS"
 
+# Non-secret config, safe in the repo and applied on every deploy (dashboard
+# plain-text variables get wiped by `wrangler deploy`, so config lives here).
+[vars]
+# Beer30 environment base URL. Change to https://api.b30.app when moving off the
+# integration-demo environment to production.
+BEER30_BASE = "https://api.integration-demo.b30.app"
+
 # dashboard.html is bundled as a Text module by Wrangler's built-in default rule
 # (**/*.html), so no custom [[rules]] block is needed here.
 
@@ -22,7 +29,6 @@ binding = "TOKENS"
 #   XERO_CLIENT_SECRET   Xero app client secret
 #   INGEST_TOKEN         the owner's "upload code" for Beer30 export drops
 #   BEER30_KEY           Beer30 REST API key (read tier) for live pulls / connection test
-#   BEER30_BASE          optional; defaults to https://api.b30.app
 #   (SESSION_SECRET and the dashboard password hash generate themselves in KV;
 #    never set them.)
 
