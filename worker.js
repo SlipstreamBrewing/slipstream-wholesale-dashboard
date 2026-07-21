@@ -106,7 +106,7 @@ async function route(request, env, ctx) {
   if (p === "/api/metrics") return metrics(request, env);
   if (p === "/api/status") return status(env);
   if (p === "/api/beer30/test") return beer30Test(env);
-  if (p === "/report") return weeklyReport(request, env);
+  if (p === "/report") return weeklyReport(request, env).catch((e) => html(reportError("Unexpected error: " + ((e && e.message) || e))));
   if (p === "/auth/xero/begin") return xeroBegin(request, env);
   if (p === "/auth/xero/callback") return xeroCallback(request, env);
   if (p === "/api/disconnect" && request.method === "POST") return disconnect(request, env);
@@ -454,19 +454,35 @@ async function fetchBeer30Companies(env) {
   return { catOf, nameOf };
 }
 // Page through published, non-voided orders in a delivery-date range.
+// Beer30 caps date ranges on some endpoints, so split long spans into windows.
+function chunkRanges(from, to, maxDays = 90) {
+  const out = [];
+  let s = new Date(from + "T00:00:00Z");
+  const end = new Date(to + "T00:00:00Z");
+  if (isNaN(s) || isNaN(end) || s > end) return [{ from, to }];
+  while (s <= end) {
+    const eMs = Math.min(s.getTime() + (maxDays - 1) * 86400000, end.getTime());
+    const e = new Date(eMs);
+    out.push({ from: s.toISOString().slice(0, 10), to: e.toISOString().slice(0, 10) });
+    s = new Date(eMs + 86400000);
+  }
+  return out;
+}
 async function iterB30Orders(env, from, to, cb) {
   const limit = 1000;
-  let offset = 0;
-  for (let page = 0; page < 100; page++) {
-    const oj = await b30Get(env, `/distribution/orders?type=PUBLISHED&delivery-date-start=${from}&delivery-date-end=${to}&limit=${limit}&offset=${offset}`);
-    const orders = (oj && oj.orders) || [];
-    for (const o of orders) {
-      const st = (o.status || "").toUpperCase();
-      if (st === "VOIDED" || st === "DECLINED") continue;
-      cb(o);
+  for (const r of chunkRanges(from, to, 90)) {
+    let offset = 0;
+    for (let page = 0; page < 100; page++) {
+      const oj = await b30Get(env, `/distribution/orders?type=PUBLISHED&delivery-date-start=${r.from}&delivery-date-end=${r.to}&limit=${limit}&offset=${offset}`);
+      const orders = (oj && oj.orders) || [];
+      for (const o of orders) {
+        const st = (o.status || "").toUpperCase();
+        if (st === "VOIDED" || st === "DECLINED") continue;
+        cb(o);
+      }
+      if (orders.length < limit) break;
+      offset += limit;
     }
-    if (orders.length < limit) break;
-    offset += limit;
   }
 }
 // Distinct company-ids that ordered in a range (used to detect first-ever orders).
@@ -557,25 +573,42 @@ function deltaHtml(cur, prev) {
   const up = d >= 0;
   return `<span style="color:${up ? "#1f9d6b" : "#d1495b"};font-weight:600">${up ? "▲" : "▼"} ${Math.abs(d).toFixed(1)}%</span>`;
 }
+function reportError(msg) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Weekly report — unavailable</title></head>
+<body style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;padding:32px;color:#1a1f26">
+<h2 style="color:#c0392b;margin:0 0 8px">Weekly report couldn't be built</h2>
+<p style="font-size:14px">${String(msg).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</p>
+<p style="font-size:13px;color:#6b7480">Try again shortly. If it keeps happening, the Beer30 API may be rate-limiting or rejecting the date range.</p>
+</body></html>`;
+}
 async function weeklyReport(request, env) {
   const P = reportPeriods();
   const demo = /integration-demo/i.test((env.BEER30_BASE || ""));
-  const cm = await fetchBeer30Companies(env);
+  const warn = [];
+  if (!(env.BEER30_KEY && ("" + env.BEER30_KEY).trim()))
+    return html(reportError("No Beer30 API key is configured, so the report has no data source."));
+  let cm;
+  try { cm = await fetchBeer30Companies(env); }
+  catch (e) { return html(reportError("Couldn't read the account list from Beer30. " + (e.message || e))); }
   const catOf = cm.catOf, nameOf = cm.nameOf;
-  const [week, prevWeek, mtd, ytd] = await Promise.all([
-    fetchBeer30Orders(env, P.week.from, P.week.to, catOf),
-    fetchBeer30Orders(env, P.prevWeek.from, P.prevWeek.to, catOf),
-    fetchBeer30Orders(env, P.mtd.from, P.mtd.to, catOf),
-    fetchBeer30Orders(env, P.ytd.from, P.ytd.to, catOf),
-  ]);
-  // New customers: ordered in MTD but never in the prior 24 months.
-  const priorFrom = ymdU(addD(new Date(P.mtd.from + "T00:00:00Z"), -730));
+  const grab = async (label, from, to) => {
+    try { return await fetchBeer30Orders(env, from, to, catOf); }
+    catch (e) { warn.push(`${label}: ${e.message || e}`); return null; }
+  };
+  // Sequential (not parallel) to stay well inside per-request subrequest limits.
+  const week = await grab("last week", P.week.from, P.week.to);
+  const prevWeek = await grab("previous week", P.prevWeek.from, P.prevWeek.to);
+  const mtd = await grab("month to date", P.mtd.from, P.mtd.to);
+  const ytd = await grab("financial YTD", P.ytd.from, P.ytd.to);
+  // New customers: ordered in MTD but never in the prior 12 months (chunked).
+  const priorFrom = ymdU(addD(new Date(P.mtd.from + "T00:00:00Z"), -365));
   const priorTo = ymdU(addD(new Date(P.mtd.from + "T00:00:00Z"), -1));
-  let priorSet = new Set();
-  try { priorSet = await b30CompanySet(env, priorFrom, priorTo); } catch (e) {}
+  let priorSet = new Set(), priorOk = true;
+  try { priorSet = await b30CompanySet(env, priorFrom, priorTo); }
+  catch (e) { priorOk = false; warn.push(`new-customer history: ${e.message || e}`); }
   const mtdCust = (mtd && mtd.customers) || {};
   const newCust = Object.entries(mtdCust)
-    .filter(([cid]) => !priorSet.has(cid))
+    .filter(([cid]) => priorOk && !priorSet.has(cid))
     .map(([cid, c]) => ({ cid, name: nameOf[cid] || cid, ...c }))
     .sort((a, b) => b.netInv - a.netInv);
   // Top 15 by MTD net revenue (with last-week revenue alongside)
@@ -620,6 +653,7 @@ footer{margin-top:22px;color:#6b7480;font-size:11.5px}
 <h1>Slipstream Brewing — Wholesale Weekly Sales Report</h1>
 <div class="sub">Week of <b>${esc(P.week.from)}</b> to <b>${esc(P.week.to)}</b> · generated ${esc(gen)} (Brisbane) · source: Beer30</div>
 ${demo ? '<div class="demo"><b>Demo data.</b> This report is running against the Beer30 integration-demo environment, not live trading figures.</div>' : ""}
+${warn.length ? `<div class="demo"><b>Partial data.</b> Some figures could not be retrieved: ${esc(warn.join("; "))}</div>` : ""}
 
 <h2>Last completed week</h2>
 <div class="tiles">
@@ -649,7 +683,7 @@ ${top.length ? top.map((c, i) => `<tr><td>${i + 1}</td><td>${esc(c.name)}</td><t
 </table>
 
 <h2>New customers — month to date</h2>
-<div class="sub" style="margin-bottom:6px">Accounts with their first order in this month (no orders in the previous 24 months).</div>
+<div class="sub" style="margin-bottom:6px">Accounts with their first order in this month (no orders in the previous 12 months).</div>
 <table><tr><th>Customer</th><th>Channel</th><th class="r">Revenue</th><th class="r">Volume</th><th class="r">Orders</th></tr>
 ${newCust.length ? newCust.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.channel)}</td><td class="r">${fmtMoney(c.netInv)}</td><td class="r">${fmtL(c.litres)}</td><td class="r">${fmtN(c.orders)}</td></tr>`).join("") : '<tr><td colspan="5" style="color:#6b7480">No new accounts this month</td></tr>'}
 </table>
