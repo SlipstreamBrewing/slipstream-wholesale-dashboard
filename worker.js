@@ -106,6 +106,7 @@ async function route(request, env, ctx) {
   if (p === "/api/metrics") return metrics(request, env);
   if (p === "/api/status") return status(env);
   if (p === "/api/beer30/test") return beer30Test(env);
+  if (p === "/report") return weeklyReport(request, env);
   if (p === "/auth/xero/begin") return xeroBegin(request, env);
   if (p === "/auth/xero/callback") return xeroCallback(request, env);
   if (p === "/api/disconnect" && request.method === "POST") return disconnect(request, env);
@@ -448,40 +449,219 @@ function isKegPkg(pkg) {
 async function fetchBeer30Companies(env) {
   const cj = await b30Get(env, "/companies");
   const arr = (cj && cj.companies && (cj.companies.Company || cj.companies)) || [];
-  const catOf = {};
-  for (const c of arr) catOf[c["company-id"]] = c.category;
-  return catOf;
+  const catOf = {}, nameOf = {};
+  for (const c of arr) { catOf[c["company-id"]] = c.category; nameOf[c["company-id"]] = c.name; }
+  return { catOf, nameOf };
 }
-async function fetchBeer30Orders(env, from, to, catOf) {
-  const acc = {};
+// Page through published, non-voided orders in a delivery-date range.
+async function iterB30Orders(env, from, to, cb) {
   const limit = 1000;
   let offset = 0;
-  for (let page = 0; page < 50; page++) {
+  for (let page = 0; page < 100; page++) {
     const oj = await b30Get(env, `/distribution/orders?type=PUBLISHED&delivery-date-start=${from}&delivery-date-end=${to}&limit=${limit}&offset=${offset}`);
     const orders = (oj && oj.orders) || [];
     for (const o of orders) {
       const st = (o.status || "").toUpperCase();
       if (st === "VOIDED" || st === "DECLINED") continue;
-      const ch = channelOf(catOf[o["company-id"]]);
-      const a = acc[ch] || (acc[ch] = { netInv: 0, kegL: 0, packL: 0, companies: new Set(), invoices: new Set() });
-      a.companies.add(o["company-id"]); a.invoices.add(o["order-id"]);
-      for (const it of (o.items || [])) {
-        const qty = parseFloat(it.quantity) || 0;
-        const price = parseFloat(it.price) || 0;
-        a.netInv += qty * price;
-        const litres = litresPerUnit(it.package) * qty;
-        if (isKegPkg(it.package)) a.kegL += litres; else a.packL += litres;
-      }
+      cb(o);
     }
     if (orders.length < limit) break;
     offset += limit;
   }
+}
+// Distinct company-ids that ordered in a range (used to detect first-ever orders).
+async function b30CompanySet(env, from, to) {
+  const s = new Set();
+  await iterB30Orders(env, from, to, (o) => s.add(o["company-id"]));
+  return s;
+}
+async function fetchBeer30Orders(env, from, to, catOf) {
+  const acc = {};
+  const cust = {};
+  await iterB30Orders(env, from, to, (o) => {
+    const cid = o["company-id"];
+    const ch = channelOf(catOf[cid]);
+    const a = acc[ch] || (acc[ch] = { netInv: 0, kegL: 0, packL: 0, companies: new Set(), invoices: new Set() });
+    a.companies.add(cid); a.invoices.add(o["order-id"]);
+    const c = cust[cid] || (cust[cid] = { channel: ch, netInv: 0, litres: 0, orders: new Set() });
+    c.orders.add(o["order-id"]);
+    for (const it of (o.items || [])) {
+      const qty = parseFloat(it.quantity) || 0;
+      const price = parseFloat(it.price) || 0;
+      const line = qty * price;
+      const litres = litresPerUnit(it.package) * qty;
+      a.netInv += line;
+      if (isKegPkg(it.package)) a.kegL += litres; else a.packL += litres;
+      c.netInv += line; c.litres += litres;
+    }
+  });
   if (!Object.keys(acc).length) return null;
   const channels = {};
   for (const [ch, a] of Object.entries(acc)) {
     channels[ch] = { netInv: a.netInv, litres: a.kegL + a.packL, kegL: a.kegL, packL: a.packL, customers: a.companies.size, orders: a.invoices.size };
   }
-  return { channels };
+  const customers = {};
+  for (const [cid, c] of Object.entries(cust)) {
+    customers[cid] = { channel: c.channel, netInv: c.netInv, litres: c.litres, orders: c.orders.size };
+  }
+  return { channels, customers };
+}
+
+// ---------------------------------------------------------------------------
+// Weekly wholesale sales report (self-contained HTML, safe to email)
+// ---------------------------------------------------------------------------
+function bneDay() { // "today" in Brisbane (UTC+10, no DST) as a UTC-midnight Date
+  const n = new Date(Date.now() + 10 * 3600 * 1000);
+  return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate()));
+}
+function ymdU(d) { return d.toISOString().slice(0, 10); }
+function addD(d, n) { return new Date(d.getTime() + n * 86400000); }
+function reportPeriods() {
+  const today = bneDay();
+  const dow = today.getUTCDay();            // 0=Sun
+  const sinceMon = (dow + 6) % 7;           // Mon=0
+  const thisMon = addD(today, -sinceMon);
+  const lastMon = addD(thisMon, -7), lastSun = addD(thisMon, -1);
+  const prevMon = addD(lastMon, -7), prevSun = addD(lastMon, -1);
+  const mStart = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), 1));
+  const fyY = today.getUTCMonth() >= 6 ? today.getUTCFullYear() : today.getUTCFullYear() - 1;
+  const fyStart = new Date(Date.UTC(fyY, 6, 1));
+  return {
+    today: ymdU(today),
+    week: { from: ymdU(lastMon), to: ymdU(lastSun) },
+    prevWeek: { from: ymdU(prevMon), to: ymdU(prevSun) },
+    mtd: { from: ymdU(mStart), to: ymdU(today) },
+    ytd: { from: ymdU(fyStart), to: ymdU(today) },
+  };
+}
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const fmtMoney = (n) => n == null ? "—" : "$" + Math.round(n).toLocaleString("en-AU");
+const fmtL = (n) => n == null ? "—" : Math.round(n).toLocaleString("en-AU") + " L";
+const fmtN = (n) => n == null ? "—" : Number(n).toLocaleString("en-AU");
+function rollup(agg) {
+  if (!agg) return { netInv: 0, litres: 0, orders: 0, accounts: 0 };
+  let netInv = 0, litres = 0, orders = 0, accounts = 0;
+  for (const [name, c] of Object.entries(agg.channels)) {
+    litres += c.litres || 0;
+    if (RANKED_CHANNELS.includes(name)) { netInv += c.netInv || 0; orders += c.orders || 0; accounts += c.customers || 0; }
+  }
+  return { netInv, litres, orders, accounts };
+}
+function deltaPct(cur, prev) {
+  if (!prev) return null;
+  return ((cur - prev) / Math.abs(prev)) * 100;
+}
+function deltaHtml(cur, prev) {
+  const d = deltaPct(cur, prev);
+  if (d == null) return '<span style="color:#6b7480">—</span>';
+  const up = d >= 0;
+  return `<span style="color:${up ? "#1f9d6b" : "#d1495b"};font-weight:600">${up ? "▲" : "▼"} ${Math.abs(d).toFixed(1)}%</span>`;
+}
+async function weeklyReport(request, env) {
+  const P = reportPeriods();
+  const demo = /integration-demo/i.test((env.BEER30_BASE || ""));
+  const cm = await fetchBeer30Companies(env);
+  const catOf = cm.catOf, nameOf = cm.nameOf;
+  const [week, prevWeek, mtd, ytd] = await Promise.all([
+    fetchBeer30Orders(env, P.week.from, P.week.to, catOf),
+    fetchBeer30Orders(env, P.prevWeek.from, P.prevWeek.to, catOf),
+    fetchBeer30Orders(env, P.mtd.from, P.mtd.to, catOf),
+    fetchBeer30Orders(env, P.ytd.from, P.ytd.to, catOf),
+  ]);
+  // New customers: ordered in MTD but never in the prior 24 months.
+  const priorFrom = ymdU(addD(new Date(P.mtd.from + "T00:00:00Z"), -730));
+  const priorTo = ymdU(addD(new Date(P.mtd.from + "T00:00:00Z"), -1));
+  let priorSet = new Set();
+  try { priorSet = await b30CompanySet(env, priorFrom, priorTo); } catch (e) {}
+  const mtdCust = (mtd && mtd.customers) || {};
+  const newCust = Object.entries(mtdCust)
+    .filter(([cid]) => !priorSet.has(cid))
+    .map(([cid, c]) => ({ cid, name: nameOf[cid] || cid, ...c }))
+    .sort((a, b) => b.netInv - a.netInv);
+  // Top 15 by MTD net revenue (with last-week revenue alongside)
+  const weekCust = (week && week.customers) || {};
+  const top = Object.entries(mtdCust)
+    .map(([cid, c]) => ({ cid, name: nameOf[cid] || cid, ...c, weekNet: (weekCust[cid] || {}).netInv || 0 }))
+    .sort((a, b) => b.netInv - a.netInv).slice(0, 15);
+
+  const rw = rollup(week), rp = rollup(prevWeek), rm = rollup(mtd), ry = rollup(ytd);
+  const chanRows = (agg) => {
+    if (!agg) return '<tr><td colspan="5" style="color:#6b7480">No data</td></tr>';
+    const ext = RANKED_CHANNELS.filter((n) => agg.channels[n]).map((n) => [n, agg.channels[n]]).sort((a, b) => b[1].netInv - a[1].netInv);
+    const tot = ext.reduce((s, [, c]) => s + c.netInv, 0);
+    let rows = ext.map(([n, c], i) => `<tr><td>${i + 1}. ${esc(n)}</td><td class="r">${fmtMoney(c.netInv)}</td><td class="r">${tot ? ((c.netInv / tot) * 100).toFixed(0) : 0}%</td><td class="r">${fmtL(c.litres)}</td><td class="r">${fmtN(c.orders)}</td></tr>`).join("");
+    const un = UNRANKED_CHANNELS.filter((n) => agg.channels[n]);
+    if (un.length) {
+      rows += `<tr><td colspan="5" style="padding-top:8px;color:#6b7480;font-size:11px">Shown, not ranked</td></tr>`;
+      rows += un.map((n) => { const c = agg.channels[n]; return `<tr style="color:#6b7480"><td>${esc(n)}</td><td class="r">${fmtMoney(c.netInv)}</td><td class="r">—</td><td class="r">${fmtL(c.litres)}</td><td class="r">${fmtN(c.orders)}</td></tr>`; }).join("");
+    }
+    return rows;
+  };
+  const gen = new Date(Date.now() + 10 * 3600 * 1000).toISOString().replace("T", " ").slice(0, 16);
+  const html = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>Slipstream Wholesale — Weekly Sales Report (${esc(P.week.from)} to ${esc(P.week.to)})</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1a1f26;background:#f6f7f9;margin:0;padding:24px;font-size:14px;line-height:1.45}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:21px;margin:0 0 2px}h2{font-size:15px;margin:26px 0 8px}
+.sub{color:#6b7480;font-size:12.5px}
+.demo{background:#fff7e6;border:1px solid #f2d999;color:#7a5a00;padding:10px 12px;border-radius:8px;margin:14px 0;font-size:12.5px}
+.tiles{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+.tile{flex:1 1 160px;background:#fff;border:1px solid #e6e9ee;border-radius:10px;padding:14px}
+.tile .l{color:#6b7480;font-size:12px}.tile .v{font-size:24px;font-weight:700;letter-spacing:-.4px;margin-top:2px}
+.tile .d{font-size:11.5px;margin-top:4px;color:#6b7480}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e6e9ee;border-radius:10px;overflow:hidden}
+th,td{text-align:left;padding:8px 10px;border-top:1px solid #eef0f3;font-size:13px}
+th{background:#fafbfc;color:#6b7480;font-weight:600;border-top:none}
+td.r,th.r{text-align:right}
+footer{margin-top:22px;color:#6b7480;font-size:11.5px}
+@media print{body{background:#fff;padding:0}.tile,table{break-inside:avoid}}
+</style></head><body><div class="wrap">
+<h1>Slipstream Brewing — Wholesale Weekly Sales Report</h1>
+<div class="sub">Week of <b>${esc(P.week.from)}</b> to <b>${esc(P.week.to)}</b> · generated ${esc(gen)} (Brisbane) · source: Beer30</div>
+${demo ? '<div class="demo"><b>Demo data.</b> This report is running against the Beer30 integration-demo environment, not live trading figures.</div>' : ""}
+
+<h2>Last completed week</h2>
+<div class="tiles">
+  <div class="tile"><div class="l">Net revenue</div><div class="v">${fmtMoney(rw.netInv)}</div><div class="d">vs prev week ${deltaHtml(rw.netInv, rp.netInv)}</div></div>
+  <div class="tile"><div class="l">Orders</div><div class="v">${fmtN(rw.orders)}</div><div class="d">vs prev week ${deltaHtml(rw.orders, rp.orders)}</div></div>
+  <div class="tile"><div class="l">Volume</div><div class="v">${fmtL(rw.litres)}</div><div class="d">vs prev week ${deltaHtml(rw.litres, rp.litres)}</div></div>
+  <div class="tile"><div class="l">Active accounts</div><div class="v">${fmtN(rw.accounts)}</div><div class="d">vs prev week ${deltaHtml(rw.accounts, rp.accounts)}</div></div>
+</div>
+
+<h2>Period summary</h2>
+<table><tr><th>Period</th><th class="r">Net revenue</th><th class="r">Orders</th><th class="r">Volume</th><th class="r">Accounts</th></tr>
+<tr><td>Last week (${esc(P.week.from)} – ${esc(P.week.to)})</td><td class="r">${fmtMoney(rw.netInv)}</td><td class="r">${fmtN(rw.orders)}</td><td class="r">${fmtL(rw.litres)}</td><td class="r">${fmtN(rw.accounts)}</td></tr>
+<tr><td>Month to date (${esc(P.mtd.from)} – ${esc(P.mtd.to)})</td><td class="r">${fmtMoney(rm.netInv)}</td><td class="r">${fmtN(rm.orders)}</td><td class="r">${fmtL(rm.litres)}</td><td class="r">${fmtN(rm.accounts)}</td></tr>
+<tr><td>Financial YTD (${esc(P.ytd.from)} – ${esc(P.ytd.to)})</td><td class="r">${fmtMoney(ry.netInv)}</td><td class="r">${fmtN(ry.orders)}</td><td class="r">${fmtL(ry.litres)}</td><td class="r">${fmtN(ry.accounts)}</td></tr>
+</table>
+<div class="sub" style="margin-top:6px">Revenue, orders and accounts cover the four external channels. Volume includes all channels.</div>
+
+<h2>Sales by channel — last week</h2>
+<table><tr><th>Channel</th><th class="r">Net revenue</th><th class="r">Share</th><th class="r">Volume</th><th class="r">Orders</th></tr>${chanRows(week)}</table>
+
+<h2>Sales by channel — month to date</h2>
+<table><tr><th>Channel</th><th class="r">Net revenue</th><th class="r">Share</th><th class="r">Volume</th><th class="r">Orders</th></tr>${chanRows(mtd)}</table>
+
+<h2>Top 15 customers — month to date</h2>
+<table><tr><th>#</th><th>Customer</th><th>Channel</th><th class="r">MTD revenue</th><th class="r">MTD volume</th><th class="r">Orders</th><th class="r">Last week</th></tr>
+${top.length ? top.map((c, i) => `<tr><td>${i + 1}</td><td>${esc(c.name)}</td><td>${esc(c.channel)}</td><td class="r">${fmtMoney(c.netInv)}</td><td class="r">${fmtL(c.litres)}</td><td class="r">${fmtN(c.orders)}</td><td class="r">${c.weekNet ? fmtMoney(c.weekNet) : "—"}</td></tr>`).join("") : '<tr><td colspan="7" style="color:#6b7480">No customer activity this month</td></tr>'}
+</table>
+
+<h2>New customers — month to date</h2>
+<div class="sub" style="margin-bottom:6px">Accounts with their first order in this month (no orders in the previous 24 months).</div>
+<table><tr><th>Customer</th><th>Channel</th><th class="r">Revenue</th><th class="r">Volume</th><th class="r">Orders</th></tr>
+${newCust.length ? newCust.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.channel)}</td><td class="r">${fmtMoney(c.netInv)}</td><td class="r">${fmtL(c.litres)}</td><td class="r">${fmtN(c.orders)}</td></tr>`).join("") : '<tr><td colspan="5" style="color:#6b7480">No new accounts this month</td></tr>'}
+</table>
+
+<footer>Slipstream Brewing Company Pty Ltd · Wholesale sales report · figures ex-GST, from Beer30 order data.<br>
+Channels: On-Premise, Off-Premise, National Retailer, Distributor (ranked); In-House and Direct / Online shown separately.</footer>
+</div></body></html>`;
+  const url = new URL(request.url);
+  const headers = { "Content-Type": "text/html; charset=utf-8" };
+  if (url.searchParams.get("download") === "1")
+    headers["Content-Disposition"] = `attachment; filename="slipstream-wholesale-week-${P.week.to}.html"`;
+  return new Response(html, { headers });
 }
 
 // ---------------------------------------------------------------------------
@@ -539,7 +719,7 @@ async function metrics(request, env) {
   // Live API: fetch the company->channel map once, reuse across periods.
   let catOf = null;
   if (apiOn) {
-    try { catOf = await fetchBeer30Companies(env); }
+    try { catOf = (await fetchBeer30Companies(env)).catOf; }
     catch (e) { out.sources.beer30.error = { plain: "Couldn't reach Beer30 for the account list; showing last upload." }; }
   }
 
